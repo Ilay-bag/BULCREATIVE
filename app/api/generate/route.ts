@@ -15,11 +15,12 @@ export async function POST(req: NextRequest) {
   }
 
   const prompt = typeof body?.prompt === "string" ? body.prompt : "";
-  const sourceUrl = typeof body?.sourceUrl === "string" ? body.sourceUrl : "";
+  // sourceUrl optional: present → image-to-image, absent → text-to-image (from scratch)
+  const sourceUrl = typeof body?.sourceUrl === "string" && body.sourceUrl ? body.sourceUrl : undefined;
   const aspectRatio = toKieAspectRatio(body?.aspectRatio);
 
-  if (!prompt || !sourceUrl) {
-    return NextResponse.json({ error: "חסר prompt או sourceUrl" }, { status: 400 });
+  if (!prompt) {
+    return NextResponse.json({ error: "חסר prompt" }, { status: 400 });
   }
 
   try {

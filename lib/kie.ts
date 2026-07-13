@@ -8,7 +8,8 @@ const CREATE_TASK_URL = "https://api.kie.ai/api/v1/jobs/createTask";
 const RECORD_INFO_URL = "https://api.kie.ai/api/v1/jobs/recordInfo";
 const FILE_UPLOAD_BASE64_URL = "https://kieai.redpandaai.co/api/file-base64-upload";
 
-const IMAGE_MODEL = "gpt-image-2-image-to-image";
+const IMAGE_MODEL_I2I = "gpt-image-2-image-to-image";
+const IMAGE_MODEL_T2I = "gpt-image-2-text-to-image";
 
 function apiKey(): string {
   const key = process.env.KIE_API_KEY;
@@ -42,24 +43,32 @@ export async function uploadImageBase64(
   return url;
 }
 
-/** Create a GPT Image 2 image-to-image task. Returns the KIE taskId. */
+/**
+ * Create a GPT Image 2 task. With `sourceUrl` → image-to-image (variations,
+ * or building a scene around a product photo). Without → text-to-image (a
+ * creative from scratch). Returns the KIE taskId.
+ */
 export async function createImageTask(params: {
   prompt: string;
-  sourceUrl: string;
+  sourceUrl?: string;
   aspectRatio?: string;
 }): Promise<string> {
+  const t2i = !params.sourceUrl;
+  // t2i "auto" only supports 1K; use an explicit ratio so we still get 2K
+  const aspect = params.aspectRatio && params.aspectRatio !== "auto"
+    ? params.aspectRatio
+    : t2i ? "1:1" : "auto";
+  const input: Record<string, unknown> = {
+    prompt: params.prompt,
+    aspect_ratio: aspect,
+    resolution: "2K",
+  };
+  if (!t2i) input.input_urls = [params.sourceUrl];
+
   const res = await outboundFetch(CREATE_TASK_URL, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: IMAGE_MODEL,
-      input: {
-        prompt: params.prompt,
-        input_urls: [params.sourceUrl],
-        aspect_ratio: params.aspectRatio ?? "auto",
-        resolution: "2K",
-      },
-    }),
+    body: JSON.stringify({ model: t2i ? IMAGE_MODEL_T2I : IMAGE_MODEL_I2I, input }),
   });
   if (res.status === 429) throw new KieRateLimitError("KIE rate limit (429)");
   const body: any = await res.json().catch(() => ({}));
