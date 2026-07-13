@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { rewriteCopy } from "@/lib/pipeline";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 120;
 
 /** Rewrite/scrub copy blocks: natural marketing Hebrew, AI tells removed. */
 export async function POST(req: NextRequest) {
