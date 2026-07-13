@@ -78,6 +78,43 @@ export const PromptsResponseSchema = z.object({
 
 export type ImagePrompt = z.infer<typeof ImagePromptSchema>;
 
+/* ---------- ad-design skill output: a creative built from scratch ---------- */
+
+export const CreativeSpecSchema = CreativeAnalysisSchema.extend({
+  platePrompt: z.string().min(20),
+});
+export type CreativeSpec = z.infer<typeof CreativeSpecSchema>;
+
+/* ---------- hebrew-copywriting skill output: rewritten blocks ---------- */
+
+export const RewriteResponseSchema = z.object({
+  blocks: z.array(z.object({ id: z.string(), text: z.string() })).min(1),
+});
+
+/* ---------- chat-controller skill output: reply + one action ---------- */
+
+export const ChatActionSchema = z.object({
+  reply: z.string(),
+  action: z
+    .object({
+      type: z.enum([
+        "new_creative",
+        "make_variations",
+        "set_count",
+        "set_text_mode",
+        "rewrite_copy",
+        "edit_text",
+        "regenerate",
+        "reset",
+        "none",
+      ]),
+      params: z.record(z.string(), z.any()).optional().default({}),
+    })
+    .optional()
+    .default({ type: "none", params: {} }),
+});
+export type ChatAction = z.infer<typeof ChatActionSchema>;
+
 /* ---------- Job state (server -> client) ---------- */
 
 export type VariationStatus =

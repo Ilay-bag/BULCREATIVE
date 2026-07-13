@@ -22,17 +22,16 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "analysis לא תקין" }, { status: 400 });
   }
-  const imageUrl = typeof body?.imageUrl === "string" ? body.imageUrl : undefined;
+  // imageUrl is optional: present → the reference image guides strategy;
+  // absent (or the "scratch" sentinel) → from-scratch text-to-image creative
+  const rawImg = typeof body?.imageUrl === "string" ? body.imageUrl : "";
+  const imageUrl = rawImg && rawImg !== "scratch" ? rawImg : undefined;
   const renderMode = body?.renderMode === "overlay" ? "overlay" : "gpt";
   const need = Math.min(Math.max(Number(body?.need) || 1, 1), 10);
   const startIndex = Math.max(Number(body?.startIndex) || 1, 1);
   const usedAngles: string[] = Array.isArray(body?.usedAngles)
     ? body.usedAngles.filter((a: unknown) => typeof a === "string")
     : [];
-
-  if (!imageUrl) {
-    return NextResponse.json({ error: "חסר imageUrl" }, { status: 400 });
-  }
 
   try {
     const variations = await planChunk({

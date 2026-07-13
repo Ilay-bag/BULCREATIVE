@@ -22,7 +22,7 @@ export function loadSkill(name: string): string {
   return content;
 }
 
-/** Compose a system prompt: shared guardrails + the step's skill. */
-export function systemPromptFor(skillName: string): string {
-  return [loadSkill("_shared/style-guardrails"), loadSkill(skillName)].join("\n\n---\n\n");
+/** Compose a system prompt: shared guardrails + one or more skills. */
+export function systemPromptFor(...skillNames: string[]): string {
+  return [loadSkill("_shared/style-guardrails"), ...skillNames.map(loadSkill)].join("\n\n---\n\n");
 }

@@ -6,9 +6,14 @@ const nextConfig: NextConfig = {
   // ensure the overlay engine's fonts and the skill prompts ship with the
   // serverless functions on Vercel (they are read from disk at runtime)
   outputFileTracingIncludes: {
+    // overlay compositing needs the fonts
     "/api/image": ["./assets/fonts/**"],
+    // every model-driven route reads skill prompts from disk
     "/api/analyze": ["./skills/**"],
     "/api/plan": ["./skills/**"],
+    "/api/design-new": ["./skills/**"],
+    "/api/chat": ["./skills/**"],
+    "/api/rewrite": ["./skills/**"],
   },
   experimental: {
     serverActions: { bodySizeLimit: "15mb" },

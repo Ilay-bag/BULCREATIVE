@@ -6,9 +6,14 @@
  */
 import {
   BriefsResponseSchema,
+  ChatActionSchema,
   CreativeAnalysisSchema,
+  CreativeSpecSchema,
   PromptsResponseSchema,
+  RewriteResponseSchema,
+  type ChatAction,
   type CreativeAnalysis,
+  type CreativeSpec,
   type RenderMode,
   type TextMode,
 } from "./schemas";
@@ -65,7 +70,7 @@ export interface PlannedVariation {
  */
 export async function planChunk(params: {
   analysis: CreativeAnalysis;
-  imageUrl: string;
+  imageUrl?: string; // absent for from-scratch (text-to-image) creatives
   need: number;
   startIndex: number;
   usedAngles: string[];
@@ -121,4 +126,80 @@ export async function planChunk(params: {
     // tolerate id drift: fall back to positional matching
     prompt: byId.get(b.id) ?? promptsRes.prompts[i]?.prompt ?? "",
   }));
+}
+
+/**
+ * Design a brand-new creative from a brief (optionally with a product photo).
+ * Produces the copy (natural Hebrew, no AI tells), layout, palette and a
+ * text-free background-plate prompt for generation.
+ */
+export async function designNew(params: {
+  brief: string;
+  productImageUrl?: string;
+  aspectRatio?: string;
+}): Promise<CreativeSpec> {
+  const ratioHint = params.aspectRatio ? `Target aspect ratio: ${params.aspectRatio}.` : "";
+  const productHint = params.productImageUrl
+    ? "A product photo is attached — design the ad around this exact product as the hero."
+    : "No product photo — design the product visual from scratch too.";
+  return callMiniMaxJson<CreativeSpec>(
+    {
+      system: systemPromptFor("ad-design", "hebrew-copywriting"),
+      text: [
+        `Brief from the user:\n${params.brief}`,
+        productHint,
+        ratioHint,
+        "Design the complete creative. Output only the JSON.",
+      ].filter(Boolean).join("\n\n"),
+      imageUrl: params.productImageUrl,
+      thinking: true,
+    },
+    CreativeSpecSchema,
+  );
+}
+
+/** Rewrite/scrub copy blocks: sharp marketing Hebrew with AI tells removed. */
+export async function rewriteCopy(params: {
+  blocks: { id: string; role: string; text: string }[];
+  instruction?: string;
+}): Promise<Record<string, string>> {
+  const res = await callMiniMaxJson(
+    {
+      system: systemPromptFor("hebrew-copywriting"),
+      text: [
+        `Text blocks (keep ids):\n${JSON.stringify({ blocks: params.blocks })}`,
+        params.instruction ? `User instruction: ${params.instruction}` : "",
+        "Rewrite each block to be natural, human, sharp marketing copy with all AI tells removed. Output only the JSON.",
+      ].filter(Boolean).join("\n\n"),
+      thinking: false,
+      maxTokens: 8000,
+    },
+    RewriteResponseSchema,
+  );
+  const map: Record<string, string> = {};
+  for (const b of res.blocks) map[b.id] = b.text;
+  return map;
+}
+
+/** The chat controller: a message + app state → a reply and one structured action. */
+export async function chatControl(params: {
+  messages: { role: "user" | "assistant"; content: string }[];
+  state: unknown;
+}): Promise<ChatAction> {
+  const history = params.messages
+    .map((m) => `${m.role === "user" ? "USER" : "ASSISTANT"}: ${m.content}`)
+    .join("\n");
+  return callMiniMaxJson<ChatAction>(
+    {
+      system: systemPromptFor("chat-controller"),
+      text: [
+        `Current app state:\n${JSON.stringify(params.state)}`,
+        `Conversation so far:\n${history}`,
+        "Reply to the latest USER message and choose one action. Output only the JSON.",
+      ].join("\n\n"),
+      thinking: false,
+      maxTokens: 4000,
+    },
+    ChatActionSchema,
+  );
 }
