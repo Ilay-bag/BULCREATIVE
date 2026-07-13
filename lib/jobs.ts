@@ -43,14 +43,10 @@ const MAX_RETRIES = 2;
 /** Pause before resubmitting a failed variation (KIE "Internal Error" is often transient). */
 const RETRY_DELAY_MS = 4000;
 
-/* ---------- store (survives Next dev HMR via globalThis) ---------- */
+/* ---------- store (in-memory cache backed by on-disk state.json) ---------- */
 
 const g = globalThis as unknown as { __bulcreativeJobs?: Map<string, JobState> };
 const jobs: Map<string, JobState> = (g.__bulcreativeJobs ??= new Map());
-
-export function getJob(id: string): JobState | undefined {
-  return jobs.get(id);
-}
 
 export function jobDir(id: string): string {
   return path.join(DATA_DIR, id);
@@ -58,6 +54,59 @@ export function jobDir(id: string): string {
 
 export function resultPath(jobId: string, variationId: string): string {
   return path.join(jobDir(jobId), "results", `${variationId}.png`);
+}
+
+function stateFile(id: string): string {
+  return path.join(jobDir(id), "state.json");
+}
+
+/** JobState is fully JSON-serializable — persist it so restarts don't lose jobs. */
+export function saveJob(job: JobState): void {
+  try {
+    fs.writeFileSync(stateFile(job.id), JSON.stringify(job));
+  } catch {
+    /* best-effort: an unwritable disk must not crash the pipeline */
+  }
+}
+
+const RUNNING_STEPS = new Set(["analyzing", "planning", "prompting", "generating"]);
+
+function loadJobFromDisk(id: string): JobState | undefined {
+  let job: JobState;
+  try {
+    job = JSON.parse(fs.readFileSync(stateFile(id), "utf-8")) as JobState;
+  } catch {
+    return undefined;
+  }
+  // The in-memory pipeline cannot survive a process restart. If a persisted job
+  // was still mid-flight, it can never resume in this process — surface that
+  // honestly instead of letting the UI spin forever, while keeping any images
+  // that already finished and were written to disk.
+  if (RUNNING_STEPS.has(job.step)) {
+    for (const v of job.variations) {
+      if (v.status !== "done" && v.status !== "failed") {
+        v.status = "failed";
+        v.error = "השרת הופעל מחדש באמצע הריצה — צור מחדש";
+      }
+    }
+    const anyDone = job.variations.some((v) => v.status === "done");
+    job.step = anyDone ? "done" : "failed";
+    if (!job.error) job.error = "השרת הופעל מחדש באמצע הריצה";
+  }
+  return job;
+}
+
+export function getJob(id: string): JobState | undefined {
+  const inMem = jobs.get(id);
+  if (inMem) return inMem;
+  // cache miss (e.g. after a restart) — rehydrate from disk
+  const fromDisk = loadJobFromDisk(id);
+  if (fromDisk) {
+    jobs.set(id, fromDisk);
+    saveJob(fromDisk); // persist the restart-reconciled state
+    return fromDisk;
+  }
+  return undefined;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -99,11 +148,13 @@ export function createJob(params: {
     variations: [],
   };
   jobs.set(id, job);
+  saveJob(job);
 
-  // fire-and-forget; state is observed via polling GET /api/jobs/[id]
-  runPipeline(job, params.buffer, params.mimeType).catch((err) => {
+  // fire-and-forget ANALYZE; pipeline then pauses at "review" for text confirmation
+  runAnalysis(job, params.buffer, params.mimeType).catch((err) => {
     job.step = "failed";
     job.error = err instanceof Error ? err.message : String(err);
+    saveJob(job);
   });
 
   return job;
@@ -123,10 +174,10 @@ export function readOriginal(jobId: string): { buffer: Buffer; mimeType: string 
 
 /* ---------- pipeline ---------- */
 
-async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
+/** Phase 1: scan the creative, then pause at "review" for text confirmation. */
+async function runAnalysis(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
   const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
 
-  // 1. ANALYZE + upload source to KIE, in parallel
   job.step = "analyzing";
   const [analysis, kieSourceUrl] = await Promise.all([
     callMiniMaxJson<CreativeAnalysis>(
@@ -149,6 +200,51 @@ async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Pro
   job.renderMode =
     job.textMode === "auto" ? (job.hasHebrew ? "overlay" : "gpt") : job.textMode;
 
+  // pause for the user to verify/correct the extracted text before generation
+  job.step = "review";
+  saveJob(job);
+}
+
+/**
+ * Resume after the user confirms the extracted text. `editedTexts` maps a text
+ * block id to its corrected string. Fire-and-forget; observed via polling.
+ */
+export function confirmJob(id: string, editedTexts: Record<string, string>): JobState | undefined {
+  const job = getJob(id);
+  if (!job || job.step !== "review" || !job.analysis) return undefined;
+
+  for (const block of job.analysis.textBlocks) {
+    const edited = editedTexts[block.id];
+    if (typeof edited === "string") block.text = edited;
+  }
+  // the edit may have added/removed Hebrew — re-resolve auto render mode
+  job.hasHebrew = job.analysis.textBlocks.some((t) => HEBREW_RE.test(t.text));
+  if (job.textMode === "auto") job.renderMode = job.hasHebrew ? "overlay" : "gpt";
+
+  job.step = "planning";
+  saveJob(job);
+
+  const original = readOriginal(id);
+  if (!original) {
+    job.step = "failed";
+    job.error = "הקובץ המקורי לא נמצא — צור מחדש";
+    saveJob(job);
+    return job;
+  }
+
+  runGeneration(job, original.buffer, original.mimeType).catch((err) => {
+    job.step = "failed";
+    job.error = err instanceof Error ? err.message : String(err);
+    saveJob(job);
+  });
+  return job;
+}
+
+/** Phase 2: plan → prompt → generate, using the (possibly corrected) analysis. */
+async function runGeneration(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
+  const analysis = job.analysis!;
+  const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
+
   // 2. STRATEGY — briefs in chunks (JSON reliability at bulk sizes)
   job.step = "planning";
   const briefs = await generateBriefs(job, analysis, dataUrl);
@@ -161,10 +257,12 @@ async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Pro
     imageReady: false,
     retries: 0,
   }));
+  saveJob(job);
 
   // 3. PROMPT — per-chunk prompt authoring (thinking off: fast, formatting task)
   job.step = "prompting";
   await authorPrompts(job, analysis, briefs);
+  saveJob(job);
 
   // 4. GENERATE — batched submission + centralized polling + immediate download
   job.step = "generating";
@@ -173,6 +271,7 @@ async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Pro
   const anyDone = job.variations.some((v) => v.status === "done");
   job.step = anyDone ? "done" : "failed";
   if (!anyDone) job.error = "כל הווריאציות נכשלו בייצור — ראה שגיאות פרטניות";
+  saveJob(job);
 }
 
 async function generateBriefs(
@@ -182,7 +281,9 @@ async function generateBriefs(
 ): Promise<VariationBrief[]> {
   const all: VariationBrief[] = [];
   const total = job.requestedCount;
-  while (all.length < total) {
+  // cap iterations so a model that under-delivers can't loop forever
+  const maxRounds = Math.ceil(total / BRIEF_CHUNK) + 3;
+  for (let round = 0; all.length < total && round < maxRounds; round++) {
     const need = Math.min(BRIEF_CHUNK, total - all.length);
     const usedAngles = all.map((b) => b.marketingAngle);
     const startIndex = all.length + 1;
@@ -251,6 +352,7 @@ async function generateAll(job: JobState, analysis: CreativeAnalysis): Promise<v
   for (const v of job.variations) {
     if (v.status !== "prompted") continue;
     await submitVariation(job, v);
+    saveJob(job);
     await sleep(CREATE_GAP_MS);
   }
 
@@ -275,6 +377,7 @@ async function generateAll(job: JobState, analysis: CreativeAnalysis): Promise<v
           fs.writeFileSync(resultPath(job.id, v.id), img);
           v.imageReady = true;
           v.status = "done";
+          saveJob(job); // persist as soon as an image lands, so a restart keeps it
         } else if (info.state === "fail") {
           if (v.retries < MAX_RETRIES) {
             v.retries += 1;
@@ -283,6 +386,7 @@ async function generateAll(job: JobState, analysis: CreativeAnalysis): Promise<v
           } else {
             v.status = "failed";
             v.error = info.failMsg ?? "הייצור נכשל ב-KIE";
+            saveJob(job);
           }
         } else if (info.state === "generating") {
           v.status = "generating";
@@ -306,6 +410,7 @@ async function generateAll(job: JobState, analysis: CreativeAnalysis): Promise<v
       v.error = "חריגה מזמן ההמתנה המקסימלי לייצור";
     }
   }
+  saveJob(job);
 }
 
 async function submitVariation(job: JobState, v: VariationState): Promise<void> {
@@ -349,8 +454,10 @@ export function serializeJob(job: JobState) {
           category: job.analysis.category,
           marketingAngle: job.analysis.marketingAngle,
           textBlocks: job.analysis.textBlocks.map((t) => ({
+            id: t.id,
             text: t.text,
             role: t.role,
+            language: t.language,
             font: t.font.likelyFamily,
           })),
         }
