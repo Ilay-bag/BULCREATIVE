@@ -11,6 +11,10 @@ especially the EXACT text and typography.
    badges ("30% OFF"), prices, disclaimers, logo wordmarks. Preserve original language,
    casing, punctuation and line breaks (use "\n" inside the string for line breaks).
    Re-read each block twice before writing it down — a single wrong character fails the task.
+   **Then do a dedicated edge sweep:** scan the four edges and corners of the image at
+   maximum attention for tiny, low-contrast text — legal lines, disclaimers, terms
+   ("Limited time offer", "T&C apply"), website URLs, hashtags. These are the most commonly
+   missed blocks and missing one fails the task. If genuinely no such text exists, move on.
 2. **Identify typography per block.** If you recognize the exact font, name it. Otherwise give
    the closest well-known match (e.g. "close to Montserrat") plus objective traits:
    serif/sans/slab/script/display, weight (300/400/700/900), case (UPPERCASE/Title/lower),
