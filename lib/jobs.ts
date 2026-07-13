@@ -1,0 +1,350 @@
+/**
+ * BULK CREATIVE machine — job store + pipeline orchestrator.
+ *
+ * Pipeline: ANALYZE (vision, thinking) -> STRATEGY (briefs, thinking)
+ *        -> PROMPT (per-variation prompts) -> GENERATE (KIE, batched)
+ *        -> immediate download of every result (KIE URLs expire in ~20min).
+ */
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import {
+  BriefsResponseSchema,
+  CreativeAnalysisSchema,
+  PromptsResponseSchema,
+  type CreativeAnalysis,
+  type JobState,
+  type VariationBrief,
+  type VariationState,
+} from "./schemas";
+import { callMiniMaxJson } from "./minimax";
+import { systemPromptFor } from "./skills";
+import {
+  createImageTask,
+  downloadImage,
+  getTaskInfo,
+  KieRateLimitError,
+  uploadImageBase64,
+} from "./kie";
+
+const DATA_DIR = path.join(process.cwd(), ".data", "jobs");
+
+/** How many briefs/prompts to request from the model per call (JSON reliability). */
+const BRIEF_CHUNK = 10;
+/** Gap between KIE createTask calls — stays well under 20 req / 10s. */
+const CREATE_GAP_MS = 700;
+/** Poll cycle for pending KIE tasks. */
+const POLL_INTERVAL_MS = 5000;
+/** Max automatic regenerations for a failed variation. */
+const MAX_RETRIES = 2;
+/** Pause before resubmitting a failed variation (KIE "Internal Error" is often transient). */
+const RETRY_DELAY_MS = 4000;
+
+/* ---------- store (survives Next dev HMR via globalThis) ---------- */
+
+const g = globalThis as unknown as { __bulcreativeJobs?: Map<string, JobState> };
+const jobs: Map<string, JobState> = (g.__bulcreativeJobs ??= new Map());
+
+export function getJob(id: string): JobState | undefined {
+  return jobs.get(id);
+}
+
+export function jobDir(id: string): string {
+  return path.join(DATA_DIR, id);
+}
+
+export function resultPath(jobId: string, variationId: string): string {
+  return path.join(jobDir(jobId), "results", `${variationId}.png`);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Aspect ratios KIE's gpt-image-2 accepts. "auto" does NOT reliably preserve the source ratio. */
+const KIE_ASPECT_RATIOS = new Set([
+  "1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5",
+  "16:9", "9:16", "2:1", "1:2", "3:1", "1:3", "21:9", "9:21",
+]);
+
+function toKieAspectRatio(analyzed: string | undefined): string {
+  const norm = (analyzed ?? "").trim();
+  return KIE_ASPECT_RATIOS.has(norm) ? norm : "auto";
+}
+
+/* ---------- job creation ---------- */
+
+export function createJob(params: {
+  originalFileName: string;
+  buffer: Buffer;
+  mimeType: string;
+  count: number;
+}): JobState {
+  const id = crypto.randomBytes(8).toString("hex");
+  const dir = jobDir(id);
+  fs.mkdirSync(path.join(dir, "results"), { recursive: true });
+  const originalPath = path.join(dir, "original");
+  fs.writeFileSync(originalPath, params.buffer);
+  fs.writeFileSync(path.join(dir, "mime.txt"), params.mimeType);
+
+  const job: JobState = {
+    id,
+    createdAt: Date.now(),
+    step: "analyzing",
+    requestedCount: Math.min(Math.max(params.count, 1), 40),
+    originalFileName: params.originalFileName,
+    variations: [],
+  };
+  jobs.set(id, job);
+
+  // fire-and-forget; state is observed via polling GET /api/jobs/[id]
+  runPipeline(job, params.buffer, params.mimeType).catch((err) => {
+    job.step = "failed";
+    job.error = err instanceof Error ? err.message : String(err);
+  });
+
+  return job;
+}
+
+export function readOriginal(jobId: string): { buffer: Buffer; mimeType: string } | undefined {
+  const dir = jobDir(jobId);
+  try {
+    return {
+      buffer: fs.readFileSync(path.join(dir, "original")),
+      mimeType: fs.readFileSync(path.join(dir, "mime.txt"), "utf-8").trim(),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/* ---------- pipeline ---------- */
+
+async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
+  const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
+
+  // 1. ANALYZE + upload source to KIE, in parallel
+  job.step = "analyzing";
+  const [analysis, kieSourceUrl] = await Promise.all([
+    callMiniMaxJson<CreativeAnalysis>(
+      {
+        system: systemPromptFor("01-analyze-creative"),
+        text: "Analyze this marketing creative. Output only the JSON.",
+        imageUrl: dataUrl,
+        thinking: true,
+      },
+      CreativeAnalysisSchema,
+    ),
+    uploadImageBase64(buffer, mimeType, `source-${job.id}.png`),
+  ]);
+  job.analysis = analysis;
+  job.kieSourceUrl = kieSourceUrl;
+
+  // 2. STRATEGY — briefs in chunks (JSON reliability at bulk sizes)
+  job.step = "planning";
+  const briefs = await generateBriefs(job, analysis, dataUrl);
+  job.variations = briefs.map<VariationState>((b) => ({
+    id: b.id,
+    marketingAngle: b.marketingAngle,
+    angleRationale: b.angleRationale,
+    visualChanges: b.visualChanges,
+    status: "planned",
+    imageReady: false,
+    retries: 0,
+  }));
+
+  // 3. PROMPT — per-chunk prompt authoring (thinking off: fast, formatting task)
+  job.step = "prompting";
+  await authorPrompts(job, analysis, briefs);
+
+  // 4. GENERATE — batched submission + centralized polling + immediate download
+  job.step = "generating";
+  await generateAll(job, analysis);
+
+  const anyDone = job.variations.some((v) => v.status === "done");
+  job.step = anyDone ? "done" : "failed";
+  if (!anyDone) job.error = "כל הווריאציות נכשלו בייצור — ראה שגיאות פרטניות";
+}
+
+async function generateBriefs(
+  job: JobState,
+  analysis: CreativeAnalysis,
+  imageDataUrl: string,
+): Promise<VariationBrief[]> {
+  const all: VariationBrief[] = [];
+  const total = job.requestedCount;
+  while (all.length < total) {
+    const need = Math.min(BRIEF_CHUNK, total - all.length);
+    const usedAngles = all.map((b) => b.marketingAngle);
+    const startIndex = all.length + 1;
+    const res = await callMiniMaxJson(
+      {
+        system: systemPromptFor("02-variation-strategy"),
+        text: [
+          `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
+          `Produce exactly ${need} variation briefs, with ids v${startIndex}..v${startIndex + need - 1}.`,
+          usedAngles.length
+            ? `Marketing angles already used (do NOT repeat any of them): ${usedAngles.join(" | ")}`
+            : "This is the first batch.",
+          "Output only the JSON.",
+        ].join("\n\n"),
+        imageUrl: imageDataUrl,
+        thinking: true,
+      },
+      BriefsResponseSchema,
+    );
+    // normalize ids to the expected sequence regardless of what the model returned
+    res.briefs.slice(0, need).forEach((b, i) => {
+      all.push({ ...b, id: `v${startIndex + i}` });
+    });
+  }
+  return all.slice(0, total);
+}
+
+async function authorPrompts(
+  job: JobState,
+  analysis: CreativeAnalysis,
+  briefs: VariationBrief[],
+): Promise<void> {
+  for (let i = 0; i < briefs.length; i += BRIEF_CHUNK) {
+    const chunk = briefs.slice(i, i + BRIEF_CHUNK);
+    const res = await callMiniMaxJson(
+      {
+        system: systemPromptFor("03-image-prompt-authoring"),
+        text: [
+          `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
+          `Variation briefs JSON:\n${JSON.stringify({ briefs: chunk })}`,
+          `Write one generation prompt per brief (${chunk.length} total). Output only the JSON.`,
+        ].join("\n\n"),
+        thinking: false,
+        maxTokens: 24000,
+      },
+      PromptsResponseSchema,
+    );
+    const byId = new Map(res.prompts.map((p) => [p.variationId, p.prompt]));
+    for (const [j, brief] of chunk.entries()) {
+      const v = job.variations.find((x) => x.id === brief.id)!;
+      // tolerate id drift: fall back to positional matching
+      v.prompt = byId.get(brief.id) ?? res.prompts[j]?.prompt;
+      if (v.prompt) v.status = "prompted";
+      else {
+        v.status = "failed";
+        v.error = "המודל לא החזיר prompt לווריאציה הזו";
+      }
+    }
+  }
+}
+
+async function generateAll(job: JobState, analysis: CreativeAnalysis): Promise<void> {
+  // submit all prompted variations, spaced to respect KIE rate limits
+  for (const v of job.variations) {
+    if (v.status !== "prompted") continue;
+    await submitVariation(job, v);
+    await sleep(CREATE_GAP_MS);
+  }
+
+  // centralized polling until every variation reaches a terminal state
+  const deadline = Date.now() + 30 * 60 * 1000; // 30 min safety cap
+  while (Date.now() < deadline) {
+    const pending = job.variations.filter(
+      (v) => v.status === "submitted" || v.status === "generating",
+    );
+    if (pending.length === 0) break;
+
+    for (const v of pending) {
+      try {
+        const info = await getTaskInfo(v.kieTaskId!);
+        if (info.state === "success" && info.resultUrls[0]) {
+          // download IMMEDIATELY — result URLs expire in ~20 minutes
+          const img = await downloadImage(info.resultUrls[0]);
+          fs.writeFileSync(resultPath(job.id, v.id), img);
+          v.imageReady = true;
+          v.status = "done";
+        } else if (info.state === "fail") {
+          if (v.retries < MAX_RETRIES) {
+            v.retries += 1;
+            await sleep(RETRY_DELAY_MS);
+            await submitVariation(job, v);
+          } else {
+            v.status = "failed";
+            v.error = info.failMsg ?? "הייצור נכשל ב-KIE";
+          }
+        } else if (info.state === "generating") {
+          v.status = "generating";
+        }
+      } catch (err) {
+        if (err instanceof KieRateLimitError) {
+          await sleep(10_000);
+          break; // restart the poll cycle after backing off
+        }
+        // transient poll/download error — keep the variation pending for the next cycle
+      }
+      await sleep(200);
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+
+  // anything still pending at the deadline is marked failed
+  for (const v of job.variations) {
+    if (v.status === "submitted" || v.status === "generating") {
+      v.status = "failed";
+      v.error = "חריגה מזמן ההמתנה המקסימלי לייצור";
+    }
+  }
+}
+
+async function submitVariation(job: JobState, v: VariationState): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      v.kieTaskId = await createImageTask({
+        prompt: v.prompt!,
+        sourceUrl: job.kieSourceUrl!,
+        // match the original creative's ratio (from analysis); fall back to auto
+        aspectRatio: toKieAspectRatio(job.analysis?.aspectRatio),
+      });
+      v.status = "submitted";
+      return;
+    } catch (err) {
+      if (err instanceof KieRateLimitError && attempt < 3) {
+        await sleep(2000 * 2 ** attempt); // 2s, 4s, 8s
+        continue;
+      }
+      v.status = "failed";
+      v.error = err instanceof Error ? err.message : String(err);
+      return;
+    }
+  }
+}
+
+/* ---------- client-facing serialization ---------- */
+
+export function serializeJob(job: JobState) {
+  const doneCount = job.variations.filter((v) => v.status === "done").length;
+  return {
+    id: job.id,
+    step: job.step,
+    error: job.error,
+    requestedCount: job.requestedCount,
+    doneCount,
+    analysis: job.analysis
+      ? {
+          product: job.analysis.product,
+          category: job.analysis.category,
+          marketingAngle: job.analysis.marketingAngle,
+          textBlocks: job.analysis.textBlocks.map((t) => ({
+            text: t.text,
+            role: t.role,
+            font: t.font.likelyFamily,
+          })),
+        }
+      : undefined,
+    variations: job.variations.map((v) => ({
+      id: v.id,
+      marketingAngle: v.marketingAngle,
+      angleRationale: v.angleRationale,
+      visualChanges: v.visualChanges,
+      status: v.status,
+      error: v.error,
+      imageReady: v.imageReady,
+      imageUrl: v.imageReady ? `/api/jobs/${job.id}/images/${v.id}` : undefined,
+    })),
+  };
+}
