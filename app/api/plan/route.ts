@@ -3,7 +3,7 @@ import { CreativeAnalysisSchema } from "@/lib/schemas";
 import { planChunk } from "@/lib/pipeline";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Plan ONE chunk of variations (briefs + prompts). The client calls this

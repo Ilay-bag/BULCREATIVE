@@ -4,7 +4,7 @@ import { analyzeCreative, detectHebrew, resolveRenderMode } from "@/lib/pipeline
 import type { TextMode } from "@/lib/schemas";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MAX_UPLOAD_BYTES = 9 * 1024 * 1024;
 const ALLOWED = new Set(["image/png", "image/jpeg", "image/webp"]);

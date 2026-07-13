@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { chatControl } from "@/lib/pipeline";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 120;
 
 /** Chat controller: NL message + app state → reply + one structured action. */
 export async function POST(req: NextRequest) {
