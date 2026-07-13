@@ -3,7 +3,13 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // native canvas binding must be required at runtime, not bundled by webpack
   serverExternalPackages: ["@napi-rs/canvas"],
-  // Allow large creative uploads through server actions / route handlers
+  // ensure the overlay engine's fonts and the skill prompts ship with the
+  // serverless functions on Vercel (they are read from disk at runtime)
+  outputFileTracingIncludes: {
+    "/api/image": ["./assets/fonts/**"],
+    "/api/analyze": ["./skills/**"],
+    "/api/plan": ["./skills/**"],
+  },
   experimental: {
     serverActions: { bodySizeLimit: "15mb" },
   },
