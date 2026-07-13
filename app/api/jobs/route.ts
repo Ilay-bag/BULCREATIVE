@@ -11,6 +11,10 @@ export async function POST(req: NextRequest) {
   const form = await req.formData();
   const file = form.get("file");
   const count = Number(form.get("count") ?? 4);
+  const textModeRaw = String(form.get("textMode") ?? "auto");
+  const textMode = (["auto", "overlay", "gpt"] as const).includes(textModeRaw as never)
+    ? (textModeRaw as "auto" | "overlay" | "gpt")
+    : "auto";
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "חסר קובץ קריאייטיב" }, { status: 400 });
@@ -31,6 +35,7 @@ export async function POST(req: NextRequest) {
     buffer,
     mimeType: file.type,
     count,
+    textMode,
   });
 
   return NextResponse.json(serializeJob(job), { status: 201 });

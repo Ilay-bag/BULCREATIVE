@@ -21,6 +21,8 @@ interface JobView {
   error?: string;
   requestedCount: number;
   doneCount: number;
+  renderMode?: "gpt" | "overlay";
+  hasHebrew?: boolean;
   analysis?: {
     product: string;
     category: string;
@@ -50,6 +52,7 @@ export default function CreativeMachine() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [count, setCount] = useState(8);
+  const [textMode, setTextMode] = useState<"auto" | "overlay" | "gpt">("auto");
   const [job, setJob] = useState<JobView | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
@@ -89,6 +92,7 @@ export default function CreativeMachine() {
       const form = new FormData();
       form.append("file", file);
       form.append("count", String(count));
+      form.append("textMode", textMode);
       const res = await fetch("/api/jobs", { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "שגיאה בהפעלת המכונה");
@@ -167,6 +171,34 @@ export default function CreativeMachine() {
             <span>1</span>
             <span>40</span>
           </div>
+
+          <div className="mt-6 border-t border-zinc-800 pt-5">
+            <label className="font-semibold">מצב טקסט</label>
+            <div className="mt-3 flex gap-2">
+              {(
+                [
+                  ["auto", "אוטומטי", "עברית → טקסט מדויק, אנגלית → גנרטיבי"],
+                  ["overlay", "טקסט מדויק", "הרקע מיוצר, הטקסט מוטבע בפונט אמיתי — פיקסל-פרפקט"],
+                  ["gpt", "גנרטיבי", "מודל התמונה מצייר גם את הטקסט"],
+                ] as const
+              ).map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setTextMode(value)}
+                  title={hint}
+                  className={`flex-1 rounded-xl px-3 py-2 text-sm font-bold transition
+                    ${textMode === value ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">
+              לקריאייטיבים בעברית מומלץ "אוטומטי" — טקסט עברי תמיד מוטבע בפונט אמיתי כדי
+              להבטיח אותיות מושלמות.
+            </p>
+          </div>
         </div>
 
         {uiError && (
@@ -225,7 +257,15 @@ export default function CreativeMachine() {
       {/* analysis summary */}
       {job.analysis && (
         <div className="mb-8 rounded-2xl bg-zinc-900/60 p-5">
-          <h2 className="mb-3 font-black text-zinc-300">🔍 מה המכונה זיהתה</h2>
+          <h2 className="mb-3 flex items-center gap-3 font-black text-zinc-300">
+            🔍 מה המכונה זיהתה
+            {job.renderMode && (
+              <span className="rounded-full bg-sky-500/15 px-3 py-0.5 text-xs font-bold text-sky-300">
+                {job.renderMode === "overlay" ? "✒ טקסט מדויק (פונט אמיתי)" : "🖌 טקסט גנרטיבי"}
+                {job.hasHebrew ? " · עברית" : ""}
+              </span>
+            )}
+          </h2>
           <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
             <span>
               <b className="text-zinc-400">מוצר:</b> {job.analysis.product}

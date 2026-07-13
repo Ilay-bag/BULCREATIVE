@@ -14,9 +14,12 @@ import {
   PromptsResponseSchema,
   type CreativeAnalysis,
   type JobState,
+  type TextMode,
   type VariationBrief,
   type VariationState,
 } from "./schemas";
+import { overlayTexts } from "./overlay";
+import { HEBREW_RE } from "./fonts";
 import { callMiniMaxJson } from "./minimax";
 import { systemPromptFor } from "./skills";
 import {
@@ -77,6 +80,7 @@ export function createJob(params: {
   buffer: Buffer;
   mimeType: string;
   count: number;
+  textMode?: TextMode;
 }): JobState {
   const id = crypto.randomBytes(8).toString("hex");
   const dir = jobDir(id);
@@ -91,6 +95,7 @@ export function createJob(params: {
     step: "analyzing",
     requestedCount: Math.min(Math.max(params.count, 1), 40),
     originalFileName: params.originalFileName,
+    textMode: params.textMode ?? "auto",
     variations: [],
   };
   jobs.set(id, job);
@@ -137,6 +142,12 @@ async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Pro
   ]);
   job.analysis = analysis;
   job.kieSourceUrl = kieSourceUrl;
+
+  // Hebrew detection decides the render mode: image models garble Hebrew glyphs,
+  // so Hebrew creatives always get the pixel-perfect overlay path in "auto".
+  job.hasHebrew = analysis.textBlocks.some((t) => HEBREW_RE.test(t.text));
+  job.renderMode =
+    job.textMode === "auto" ? (job.hasHebrew ? "overlay" : "gpt") : job.textMode;
 
   // 2. STRATEGY — briefs in chunks (JSON reliability at bulk sizes)
   job.step = "planning";
@@ -206,13 +217,15 @@ async function authorPrompts(
 ): Promise<void> {
   for (let i = 0; i < briefs.length; i += BRIEF_CHUNK) {
     const chunk = briefs.slice(i, i + BRIEF_CHUNK);
+    const mode = job.renderMode === "overlay" ? "background-plate" : "full";
     const res = await callMiniMaxJson(
       {
         system: systemPromptFor("03-image-prompt-authoring"),
         text: [
+          `MODE: ${mode}`,
           `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
           `Variation briefs JSON:\n${JSON.stringify({ briefs: chunk })}`,
-          `Write one generation prompt per brief (${chunk.length} total). Output only the JSON.`,
+          `Write one generation prompt per brief (${chunk.length} total), following MODE "${mode}". Output only the JSON.`,
         ].join("\n\n"),
         thinking: false,
         maxTokens: 24000,
@@ -254,7 +267,11 @@ async function generateAll(job: JobState, analysis: CreativeAnalysis): Promise<v
         const info = await getTaskInfo(v.kieTaskId!);
         if (info.state === "success" && info.resultUrls[0]) {
           // download IMMEDIATELY — result URLs expire in ~20 minutes
-          const img = await downloadImage(info.resultUrls[0]);
+          let img = await downloadImage(info.resultUrls[0]);
+          if (job.renderMode === "overlay") {
+            // composite the EXACT original texts with real fonts (pixel-perfect)
+            img = await overlayTexts(img, analysis);
+          }
           fs.writeFileSync(resultPath(job.id, v.id), img);
           v.imageReady = true;
           v.status = "done";
@@ -324,6 +341,8 @@ export function serializeJob(job: JobState) {
     error: job.error,
     requestedCount: job.requestedCount,
     doneCount,
+    renderMode: job.renderMode,
+    hasHebrew: job.hasHebrew,
     analysis: job.analysis
       ? {
           product: job.analysis.product,

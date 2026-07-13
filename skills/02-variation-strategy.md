@@ -20,6 +20,11 @@ SAME EXACT text & typography, but changes (a) the marketing angle expressed by t
 - **Text-layout awareness.** The exact same text blocks must still fit; keep their approximate
   regions in mind (do not place busy visual detail where the headline lives).
 - **No two briefs may share the same angle.** Also avoid every angle in the "already used" list.
+- **Hebrew / Israeli-market creatives:** when the creative's text is Hebrew, tune angles to the
+  Israeli consumer: local urgency culture ("רק היום", גמר מלאי), holiday moments (ראש השנה, פסח,
+  חנוכה — only if seasonally plausible), family & value orientation, local trust signals
+  (משלוח מהיר, אחריות ישראלית). The VISUAL expresses the angle; the Hebrew TEXT stays untouched,
+  character for character. Never translate the copy.
 
 ## Output — ONLY this JSON (schema)
 

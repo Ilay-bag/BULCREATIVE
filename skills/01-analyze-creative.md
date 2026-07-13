@@ -15,6 +15,16 @@ especially the EXACT text and typography.
    maximum attention for tiny, low-contrast text — legal lines, disclaimers, terms
    ("Limited time offer", "T&C apply"), website URLs, hashtags. These are the most commonly
    missed blocks and missing one fails the task. If genuinely no such text exists, move on.
+1b. **Hebrew creatives (עברית) — extra care.** Many creatives are in Hebrew. When reading Hebrew:
+   - Read RIGHT-TO-LEFT. Never reverse letter order inside a word or word order inside a line.
+   - Preserve final letterforms exactly (ם ן ץ ף ך vs מ נ צ פ כ) — swapping them fails the task.
+   - Preserve niqqud (vowel points) only if actually printed; do not add or remove it.
+   - Mixed content ("30% הנחה", brand names in Latin inside Hebrew lines) — keep each token
+     exactly as printed, in logical reading order.
+   - Set `language` to "he" for Hebrew blocks, "en" for Latin, "mixed" when both scripts appear.
+   - Hebrew font identification: compare against common Israeli ad faces — Heebo, Rubik,
+     Assistant, Secular One (display), Frank Ruhl Libre (serif), Alef, Varela Round.
+     Name the closest match in `likelyFamily`.
 2. **Identify typography per block.** If you recognize the exact font, name it. Otherwise give
    the closest well-known match (e.g. "close to Montserrat") plus objective traits:
    serif/sans/slab/script/display, weight (300/400/700/900), case (UPPERCASE/Title/lower),
@@ -35,6 +45,7 @@ especially the EXACT text and typography.
       "id": "t1",
       "text": "EXACT text, verbatim, \n for line breaks",
       "role": "headline | subheadline | cta | badge | price | legal | logo-wordmark | other",
+      "language": "he | en | mixed | other",
       "font": {
         "likelyFamily": "string",
         "category": "serif | sans-serif | slab | script | display | mono",
