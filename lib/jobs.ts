@@ -150,8 +150,8 @@ export function createJob(params: {
   jobs.set(id, job);
   saveJob(job);
 
-  // fire-and-forget; state is observed via polling GET /api/jobs/[id]
-  runPipeline(job, params.buffer, params.mimeType).catch((err) => {
+  // fire-and-forget ANALYZE; pipeline then pauses at "review" for text confirmation
+  runAnalysis(job, params.buffer, params.mimeType).catch((err) => {
     job.step = "failed";
     job.error = err instanceof Error ? err.message : String(err);
     saveJob(job);
@@ -174,10 +174,10 @@ export function readOriginal(jobId: string): { buffer: Buffer; mimeType: string 
 
 /* ---------- pipeline ---------- */
 
-async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
+/** Phase 1: scan the creative, then pause at "review" for text confirmation. */
+async function runAnalysis(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
   const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
 
-  // 1. ANALYZE + upload source to KIE, in parallel
   job.step = "analyzing";
   const [analysis, kieSourceUrl] = await Promise.all([
     callMiniMaxJson<CreativeAnalysis>(
@@ -199,7 +199,51 @@ async function runPipeline(job: JobState, buffer: Buffer, mimeType: string): Pro
   job.hasHebrew = analysis.textBlocks.some((t) => HEBREW_RE.test(t.text));
   job.renderMode =
     job.textMode === "auto" ? (job.hasHebrew ? "overlay" : "gpt") : job.textMode;
+
+  // pause for the user to verify/correct the extracted text before generation
+  job.step = "review";
   saveJob(job);
+}
+
+/**
+ * Resume after the user confirms the extracted text. `editedTexts` maps a text
+ * block id to its corrected string. Fire-and-forget; observed via polling.
+ */
+export function confirmJob(id: string, editedTexts: Record<string, string>): JobState | undefined {
+  const job = getJob(id);
+  if (!job || job.step !== "review" || !job.analysis) return undefined;
+
+  for (const block of job.analysis.textBlocks) {
+    const edited = editedTexts[block.id];
+    if (typeof edited === "string") block.text = edited;
+  }
+  // the edit may have added/removed Hebrew — re-resolve auto render mode
+  job.hasHebrew = job.analysis.textBlocks.some((t) => HEBREW_RE.test(t.text));
+  if (job.textMode === "auto") job.renderMode = job.hasHebrew ? "overlay" : "gpt";
+
+  job.step = "planning";
+  saveJob(job);
+
+  const original = readOriginal(id);
+  if (!original) {
+    job.step = "failed";
+    job.error = "הקובץ המקורי לא נמצא — צור מחדש";
+    saveJob(job);
+    return job;
+  }
+
+  runGeneration(job, original.buffer, original.mimeType).catch((err) => {
+    job.step = "failed";
+    job.error = err instanceof Error ? err.message : String(err);
+    saveJob(job);
+  });
+  return job;
+}
+
+/** Phase 2: plan → prompt → generate, using the (possibly corrected) analysis. */
+async function runGeneration(job: JobState, buffer: Buffer, mimeType: string): Promise<void> {
+  const analysis = job.analysis!;
+  const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
 
   // 2. STRATEGY — briefs in chunks (JSON reliability at bulk sizes)
   job.step = "planning";
@@ -410,8 +454,10 @@ export function serializeJob(job: JobState) {
           category: job.analysis.category,
           marketingAngle: job.analysis.marketingAngle,
           textBlocks: job.analysis.textBlocks.map((t) => ({
+            id: t.id,
             text: t.text,
             role: t.role,
+            language: t.language,
             font: t.font.likelyFamily,
           })),
         }

@@ -115,6 +115,7 @@ export interface VariationState {
 export type JobStep =
   | "uploading"
   | "analyzing"
+  | "review"
   | "planning"
   | "prompting"
   | "generating"

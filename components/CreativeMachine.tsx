@@ -15,9 +15,17 @@ interface VariationView {
   imageUrl?: string;
 }
 
+interface TextBlockView {
+  id: string;
+  text: string;
+  role: string;
+  language?: string;
+  font: string;
+}
+
 interface JobView {
   id: string;
-  step: "analyzing" | "planning" | "prompting" | "generating" | "done" | "failed";
+  step: "analyzing" | "review" | "planning" | "prompting" | "generating" | "done" | "failed";
   error?: string;
   requestedCount: number;
   doneCount: number;
@@ -27,13 +35,14 @@ interface JobView {
     product: string;
     category: string;
     marketingAngle: string;
-    textBlocks: { text: string; role: string; font: string }[];
+    textBlocks: TextBlockView[];
   };
   variations: VariationView[];
 }
 
 const STEPS: { key: JobView["step"]; label: string }[] = [
   { key: "analyzing", label: "סורק את הקריאייטיב" },
+  { key: "review", label: "אישור טקסט" },
   { key: "planning", label: "מתכנן זוויות שיווקיות" },
   { key: "prompting", label: "כותב הנחיות ייצור" },
   { key: "generating", label: "מייצר וריאציות" },
@@ -41,11 +50,23 @@ const STEPS: { key: JobView["step"]; label: string }[] = [
 
 const STEP_ORDER: Record<string, number> = {
   analyzing: 0,
-  planning: 1,
-  prompting: 2,
-  generating: 3,
-  done: 4,
-  failed: 4,
+  review: 1,
+  planning: 2,
+  prompting: 3,
+  generating: 4,
+  done: 5,
+  failed: 5,
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  headline: "כותרת",
+  subheadline: "כותרת משנה",
+  cta: "כפתור פעולה",
+  badge: "תג",
+  price: "מחיר",
+  legal: "טקסט משפטי",
+  "logo-wordmark": "לוגו",
+  other: "אחר",
 };
 
 export default function CreativeMachine() {
@@ -57,6 +78,8 @@ export default function CreativeMachine() {
   const [submitting, setSubmitting] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [confirming, setConfirming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const acceptFile = useCallback((f: File | undefined | null) => {
@@ -70,9 +93,9 @@ export default function CreativeMachine() {
     setPreviewUrl(URL.createObjectURL(f));
   }, []);
 
-  /* ---------- polling ---------- */
+  /* ---------- polling (paused during "review": user is editing) ---------- */
   useEffect(() => {
-    if (!job || job.step === "done" || job.step === "failed") return;
+    if (!job || job.step === "done" || job.step === "failed" || job.step === "review") return;
     const t = setInterval(async () => {
       try {
         const res = await fetch(`/api/jobs/${job.id}`);
@@ -83,6 +106,37 @@ export default function CreativeMachine() {
     }, 2000);
     return () => clearInterval(t);
   }, [job?.id, job?.step]);
+
+  /* seed the edit fields once the review step arrives */
+  useEffect(() => {
+    if (job?.step === "review" && job.analysis) {
+      setEdits((prev) =>
+        Object.keys(prev).length
+          ? prev
+          : Object.fromEntries(job.analysis!.textBlocks.map((b) => [b.id, b.text])),
+      );
+    }
+  }, [job?.step, job?.id]);
+
+  const confirmText = async () => {
+    if (!job) return;
+    setConfirming(true);
+    setUiError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texts: edits }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "שגיאה באישור הטקסט");
+      setJob(data);
+    } catch (err) {
+      setUiError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirming(false);
+    }
+  };
 
   const start = async () => {
     if (!file) return;
@@ -108,6 +162,7 @@ export default function CreativeMachine() {
     setJob(null);
     setFile(null);
     setPreviewUrl(null);
+    setEdits({});
   };
 
   /* ================= idle: upload screen ================= */
@@ -213,6 +268,84 @@ export default function CreativeMachine() {
         >
           {submitting ? "מפעיל את המכונה..." : `🚀 צור ${count} וריאציות`}
         </button>
+      </div>
+    );
+  }
+
+  /* ================= review: confirm/correct extracted text ================= */
+  if (job.step === "review" && job.analysis) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <div className="mb-6 text-center">
+          <span className="rounded-full bg-fuchsia-500/20 px-4 py-1.5 text-sm font-bold text-fuchsia-300">
+            שלב 2 מתוך 3 · אישור טקסט
+          </span>
+          <h2 className="mt-4 text-2xl font-black text-zinc-100">בדוק שהטקסט נקרא נכון</h2>
+          <p className="mx-auto mt-2 max-w-xl text-sm text-zinc-400">
+            המכונה סרקה את הקריאייטיב. תקן כאן כל טעות קריאה — הטקסט הזה יוטבע{" "}
+            <b className="text-zinc-200">מדויק</b> בכל {job.requestedCount} הווריאציות.
+            {job.hasHebrew && " שים לב במיוחד לאותיות דומות (ר/ד, ך/ן, ן/ת)."}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-[240px_1fr]">
+          {previewUrl && (
+            <div className="sm:sticky sm:top-4 sm:self-start">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={previewUrl}
+                alt="הקריאייטיב המקורי"
+                className="w-full rounded-xl ring-1 ring-zinc-800"
+              />
+              <p className="mt-2 text-center text-xs text-zinc-500">הקריאייטיב המקורי</p>
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {job.analysis.textBlocks.map((b) => {
+              const isHe = (b.language ?? "").startsWith("he") || /[֐-׿]/.test(b.text);
+              return (
+                <div key={b.id} className="rounded-xl bg-zinc-900/70 p-3 ring-1 ring-zinc-800">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-xs font-bold text-zinc-400">
+                      {ROLE_LABELS[b.role] ?? b.role}
+                    </span>
+                    <span className="text-[11px] text-zinc-600">{b.font}</span>
+                  </div>
+                  <textarea
+                    value={edits[b.id] ?? b.text}
+                    onChange={(e) => setEdits((p) => ({ ...p, [b.id]: e.target.value }))}
+                    dir={isHe ? "rtl" : "ltr"}
+                    rows={b.text.includes("\n") ? 2 : 1}
+                    className="w-full resize-y rounded-lg bg-zinc-950 px-3 py-2 text-lg text-zinc-100
+                      outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {uiError && (
+          <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{uiError}</p>
+        )}
+
+        <div className="mt-8 flex flex-wrap gap-3">
+          <button
+            onClick={confirmText}
+            disabled={confirming}
+            className="flex-1 rounded-2xl bg-fuchsia-600 py-4 text-lg font-black transition
+              hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600"
+          >
+            {confirming ? "מתחיל ייצור..." : `✓ אשר וצור ${job.requestedCount} וריאציות`}
+          </button>
+          <button
+            onClick={reset}
+            className="rounded-2xl bg-zinc-800 px-6 py-4 font-black transition hover:bg-zinc-700"
+          >
+            ביטול
+          </button>
+        </div>
       </div>
     );
   }
