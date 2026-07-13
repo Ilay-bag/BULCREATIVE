@@ -20,6 +20,34 @@ interface PlacedBlock {
   letterSpacing: string;
 }
 
+const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+// chunks Skia needs to render; everything else (C2PA/JUMBF provenance, text
+// metadata, etc.) is dropped so the decoder doesn't choke on non-standard chunks
+const KEEP_CHUNKS = new Set([
+  "IHDR", "PLTE", "tRNS", "IDAT", "IEND", "gAMA", "cHRM", "sRGB", "pHYs", "bKGD",
+]);
+
+/**
+ * Strip non-essential PNG chunks. GPT-Image outputs embed C2PA "Content
+ * Credentials" (caBX/jumb/c2pa chunks) that @napi-rs/canvas fails to parse
+ * ("Invalid SVG image"); browsers render them fine but our decoder does not.
+ */
+function sanitizePng(buf: Buffer): Buffer {
+  if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIG)) return buf; // not a PNG
+  const out: Buffer[] = [PNG_SIG];
+  let off = 8;
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.subarray(off + 4, off + 8).toString("latin1");
+    const end = off + 12 + len;
+    if (end > buf.length) break;
+    if (KEEP_CHUNKS.has(type)) out.push(buf.subarray(off, end));
+    off = end;
+    if (type === "IEND") break;
+  }
+  return Buffer.concat(out);
+}
+
 const LETTER_SPACING_PX: Record<string, (size: number) => number> = {
   tight: (s) => -0.02 * s,
   normal: () => 0,
@@ -58,7 +86,7 @@ export async function overlayTexts(
   analysis: CreativeAnalysis,
 ): Promise<Buffer> {
   ensureFontsRegistered();
-  const img = await loadImage(plate);
+  const img = await loadImage(sanitizePng(plate));
   const W = img.width;
   const H = img.height;
   const canvas = createCanvas(W, H);

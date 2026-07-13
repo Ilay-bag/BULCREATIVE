@@ -1,62 +1,54 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import JSZip from "jszip";
 
-/* ---------- types mirrored from serializeJob ---------- */
+/* ---------- types ---------- */
 
-interface VariationView {
-  id: string;
-  marketingAngle: string;
-  angleRationale: string;
-  visualChanges: string[];
-  status: "planned" | "prompted" | "submitted" | "generating" | "done" | "failed";
-  error?: string;
-  imageReady: boolean;
-  imageUrl?: string;
-}
-
-interface TextBlockView {
+interface TextBlock {
   id: string;
   text: string;
   role: string;
   language?: string;
-  font: string;
+  font: { likelyFamily: string };
+  color?: string;
+  bbox: { x: number; y: number; w: number; h: number };
 }
 
-interface JobView {
+interface Analysis {
+  textBlocks: TextBlock[];
+  product: string;
+  category: string;
+  marketingAngle: string;
+  aspectRatio?: string;
+  [k: string]: unknown;
+}
+
+type VarStatus = "planned" | "submitted" | "generating" | "done" | "failed";
+
+interface Variation {
   id: string;
-  step: "analyzing" | "review" | "planning" | "prompting" | "generating" | "done" | "failed";
+  marketingAngle: string;
+  angleRationale: string;
+  visualChanges: string[];
+  prompt: string;
+  taskId?: string;
+  status: VarStatus;
   error?: string;
-  requestedCount: number;
-  doneCount: number;
-  renderMode?: "gpt" | "overlay";
-  hasHebrew?: boolean;
-  analysis?: {
-    product: string;
-    category: string;
-    marketingAngle: string;
-    textBlocks: TextBlockView[];
-  };
-  variations: VariationView[];
+  blob?: Blob;
+  blobUrl?: string;
+  retries: number;
+  imgFails: number;
 }
 
-const STEPS: { key: JobView["step"]; label: string }[] = [
-  { key: "analyzing", label: "סורק את הקריאייטיב" },
-  { key: "review", label: "אישור טקסט" },
-  { key: "planning", label: "מתכנן זוויות שיווקיות" },
-  { key: "prompting", label: "כותב הנחיות ייצור" },
-  { key: "generating", label: "מייצר וריאציות" },
-];
+type Phase = "idle" | "analyzing" | "review" | "planning" | "generating" | "done" | "failed";
 
-const STEP_ORDER: Record<string, number> = {
-  analyzing: 0,
-  review: 1,
-  planning: 2,
-  prompting: 3,
-  generating: 4,
-  done: 5,
-  failed: 5,
-};
+/* ---------- constants ---------- */
+
+const PLAN_CHUNK = 10;
+const CREATE_GAP_MS = 700; // < 20 req / 10s
+const POLL_INTERVAL_MS = 5000;
+const MAX_RETRIES = 2;
 
 const ROLE_LABELS: Record<string, string> = {
   headline: "כותרת",
@@ -69,18 +61,46 @@ const ROLE_LABELS: Record<string, string> = {
   other: "אחר",
 };
 
+const STEPS: { key: Phase; label: string }[] = [
+  { key: "analyzing", label: "סורק" },
+  { key: "review", label: "אישור טקסט" },
+  { key: "planning", label: "מתכנן" },
+  { key: "generating", label: "מייצר" },
+];
+const STEP_ORDER: Record<string, number> = {
+  analyzing: 0, review: 1, planning: 2, generating: 3, done: 4, failed: 4,
+};
+
+const HEBREW_RE = /[֐-׿]/;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/* ================================================================= */
+
 export default function CreativeMachine() {
+  const [phase, setPhase] = useState<Phase>("idle");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [count, setCount] = useState(8);
   const [textMode, setTextMode] = useState<"auto" | "overlay" | "gpt">("auto");
-  const [job, setJob] = useState<JobView | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [sourceUrl, setSourceUrl] = useState<string>("");
+  const [renderMode, setRenderMode] = useState<"gpt" | "overlay">("gpt");
+  const [hasHebrew, setHasHebrew] = useState(false);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+
+  const [variations, setVariations] = useState<Variation[]>([]);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [zipping, setZipping] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const varsRef = useRef<Variation[]>([]);
+
+  const syncVars = (vars: Variation[]) => {
+    varsRef.current = vars;
+    setVariations([...vars]);
+  };
 
   const acceptFile = useCallback((f: File | undefined | null) => {
     if (!f) return;
@@ -93,111 +113,248 @@ export default function CreativeMachine() {
     setPreviewUrl(URL.createObjectURL(f));
   }, []);
 
-  /* ---------- polling (paused during "review": user is editing) ---------- */
-  useEffect(() => {
-    if (!job || job.step === "done" || job.step === "failed" || job.step === "review") return;
-    const t = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/jobs/${job.id}`);
-        if (res.ok) setJob(await res.json());
-      } catch {
-        /* transient poll errors are fine */
-      }
-    }, 2000);
-    return () => clearInterval(t);
-  }, [job?.id, job?.step]);
-
-  /* seed the edit fields once the review step arrives */
-  useEffect(() => {
-    if (job?.step === "review" && job.analysis) {
-      setEdits((prev) =>
-        Object.keys(prev).length
-          ? prev
-          : Object.fromEntries(job.analysis!.textBlocks.map((b) => [b.id, b.text])),
-      );
-    }
-  }, [job?.step, job?.id]);
-
-  const confirmText = async () => {
-    if (!job) return;
-    setConfirming(true);
-    setUiError(null);
-    try {
-      const res = await fetch(`/api/jobs/${job.id}/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texts: edits }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "שגיאה באישור הטקסט");
-      setJob(data);
-    } catch (err) {
-      setUiError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConfirming(false);
-    }
-  };
-
+  /* ---------- step 1: analyze ---------- */
   const start = async () => {
     if (!file) return;
-    setSubmitting(true);
+    setBusy(true);
     setUiError(null);
+    setPhase("analyzing");
     try {
       const form = new FormData();
       form.append("file", file);
-      form.append("count", String(count));
       form.append("textMode", textMode);
-      const res = await fetch("/api/jobs", { method: "POST", body: form });
+      const res = await fetch("/api/analyze", { method: "POST", body: form });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "שגיאה בהפעלת המכונה");
-      setJob(data);
+      if (!res.ok) throw new Error(data.error ?? "שגיאה בסריקה");
+      setAnalysis(data.analysis);
+      setSourceUrl(data.sourceUrl);
+      setRenderMode(data.renderMode);
+      setHasHebrew(data.hasHebrew);
+      setEdits(Object.fromEntries(data.analysis.textBlocks.map((b: TextBlock) => [b.id, b.text])));
+      setPhase("review");
     } catch (err) {
       setUiError(err instanceof Error ? err.message : String(err));
+      setPhase("idle");
     } finally {
-      setSubmitting(false);
+      setBusy(false);
+    }
+  };
+
+  /* ---------- step 2: confirm text → plan → generate ---------- */
+  const confirmText = async () => {
+    if (!analysis) return;
+    setBusy(true);
+    setUiError(null);
+
+    // apply edits to a working copy of the analysis
+    const editedBlocks = analysis.textBlocks.map((b) => ({ ...b, text: edits[b.id] ?? b.text }));
+    const editedAnalysis: Analysis = { ...analysis, textBlocks: editedBlocks };
+    const heb = editedBlocks.some((b) => HEBREW_RE.test(b.text));
+    const mode = textMode === "auto" ? (heb ? "overlay" : "gpt") : textMode;
+    setAnalysis(editedAnalysis);
+    setHasHebrew(heb);
+    setRenderMode(mode);
+
+    try {
+      setPhase("planning");
+      const planned = await planAll(editedAnalysis, mode);
+      const vars: Variation[] = planned.map((p) => ({ ...p, status: "planned", retries: 0, imgFails: 0 }));
+      syncVars(vars);
+      setPhase("generating");
+      await generateAll(editedAnalysis, mode);
+      const anyDone = varsRef.current.some((v) => v.status === "done");
+      setPhase(anyDone ? "done" : "failed");
+      if (!anyDone) setUiError("כל הווריאציות נכשלו בייצור");
+    } catch (err) {
+      setUiError(err instanceof Error ? err.message : String(err));
+      setPhase("failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const planAll = async (a: Analysis, mode: "gpt" | "overlay") => {
+    const all: Omit<Variation, "status" | "retries">[] = [];
+    const maxRounds = Math.ceil(count / PLAN_CHUNK) + 3;
+    for (let round = 0; all.length < count && round < maxRounds; round++) {
+      const need = Math.min(PLAN_CHUNK, count - all.length);
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysis: a,
+          imageUrl: sourceUrl,
+          renderMode: mode,
+          need,
+          startIndex: all.length + 1,
+          usedAngles: all.map((v) => v.marketingAngle),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "שגיאה בתכנון");
+      for (const v of data.variations.slice(0, need)) all.push(v);
+    }
+    return all.slice(0, count);
+  };
+
+  const submitOne = async (v: Variation, a: Analysis) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: v.prompt, sourceUrl, aspectRatio: a.aspectRatio }),
+      });
+      if (res.status === 429 && attempt < 3) {
+        await sleep(2000 * 2 ** attempt);
+        continue;
+      }
+      const data = await res.json();
+      if (!res.ok) {
+        v.status = "failed";
+        v.error = data.error ?? "שגיאה בשליחה";
+        if (data.code === "credits") setUiError(data.error); // surface prominently
+        return;
+      }
+      v.taskId = data.taskId;
+      v.status = "submitted";
+      return;
+    }
+  };
+
+  const generateAll = async (a: Analysis, mode: "gpt" | "overlay") => {
+    const vars = varsRef.current;
+    // submit, spaced for rate limits
+    for (const v of vars) {
+      await submitOne(v, a);
+      syncVars(vars);
+      await sleep(CREATE_GAP_MS);
+    }
+    // poll until terminal
+    const deadline = Date.now() + 30 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const pending = vars.filter((v) => v.status === "submitted" || v.status === "generating");
+      if (pending.length === 0) break;
+      for (const v of pending) {
+        try {
+          const res = await fetch(`/api/kie-status?taskId=${encodeURIComponent(v.taskId!)}`);
+          if (res.status === 429) {
+            await sleep(10000);
+            break;
+          }
+          const info = await res.json();
+          if (info.state === "success" && info.resultUrl) {
+            const imgRes = await fetch("/api/image", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                resultUrl: info.resultUrl,
+                mode,
+                analysis: mode === "overlay" ? a : undefined,
+              }),
+            });
+            if (imgRes.ok) {
+              const blob = await imgRes.blob();
+              v.blob = blob;
+              v.blobUrl = URL.createObjectURL(blob);
+              v.status = "done";
+            } else {
+              // KIE succeeded but fetching/compositing the image failed — bounded retry
+              v.imgFails += 1;
+              if (v.imgFails >= 3) {
+                v.status = "failed";
+                v.error = "התמונה נוצרה אך ההורדה נכשלה";
+              }
+            }
+          } else if (info.state === "fail") {
+            if (v.retries < MAX_RETRIES) {
+              v.retries += 1;
+              await sleep(4000);
+              await submitOne(v, a);
+            } else {
+              v.status = "failed";
+              v.error = info.failMsg ?? "הייצור נכשל";
+            }
+          } else if (info.state === "generating") {
+            v.status = "generating";
+          }
+        } catch {
+          /* transient — retry next cycle */
+        }
+        syncVars(vars);
+        await sleep(250);
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+    for (const v of vars) {
+      if (v.status === "submitted" || v.status === "generating") {
+        v.status = "failed";
+        v.error = "חריגה מזמן ההמתנה";
+      }
+    }
+    syncVars(vars);
+  };
+
+  /* ---------- downloads ---------- */
+  const downloadOne = (v: Variation) => {
+    if (!v.blobUrl) return;
+    const a = document.createElement("a");
+    a.href = v.blobUrl;
+    a.download = `bulcreative-${v.id}.png`;
+    a.click();
+  };
+
+  const downloadZip = async () => {
+    setZipping(true);
+    try {
+      const zip = new JSZip();
+      for (const v of variations) {
+        if (!v.blob) continue;
+        const safe = v.marketingAngle.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 50).trim();
+        zip.file(`${v.id} - ${safe || "variation"}.png`, v.blob);
+      }
+      const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "bulcreative.zip";
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setZipping(false);
     }
   };
 
   const reset = () => {
-    setJob(null);
+    variations.forEach((v) => v.blobUrl && URL.revokeObjectURL(v.blobUrl));
+    setPhase("idle");
     setFile(null);
     setPreviewUrl(null);
+    setAnalysis(null);
+    setSourceUrl("");
     setEdits({});
+    syncVars([]);
+    setUiError(null);
   };
 
-  /* ================= idle: upload screen ================= */
-  if (!job) {
+  const doneCount = variations.filter((v) => v.status === "done").length;
+
+  /* ================= idle: upload ================= */
+  if (phase === "idle") {
     return (
       <div className="mx-auto max-w-2xl">
         <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            acceptFile(e.dataTransfer.files?.[0]);
-          }}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); acceptFile(e.dataTransfer.files?.[0]); }}
           onClick={() => fileInputRef.current?.click()}
           className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition
             ${dragOver ? "border-fuchsia-400 bg-fuchsia-400/10" : "border-zinc-700 bg-zinc-900/60 hover:border-zinc-500"}`}
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            className="hidden"
-            onChange={(e) => acceptFile(e.target.files?.[0])}
-          />
+          <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp"
+            className="hidden" onChange={(e) => acceptFile(e.target.files?.[0])} />
           {previewUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={previewUrl}
-              alt="הקריאייטיב שהועלה"
-              className="mx-auto max-h-72 rounded-lg shadow-lg"
-            />
+            <img src={previewUrl} alt="הקריאייטיב שהועלה" className="mx-auto max-h-72 rounded-lg shadow-lg" />
           ) : (
             <>
               <div className="text-5xl">🎨</div>
@@ -210,70 +367,46 @@ export default function CreativeMachine() {
         <div className="mt-8 rounded-2xl bg-zinc-900/60 p-6">
           <div className="flex items-center justify-between">
             <label className="font-semibold">כמות וריאציות</label>
-            <span className="rounded-lg bg-fuchsia-500/20 px-3 py-1 text-xl font-black text-fuchsia-300">
-              {count}
-            </span>
+            <span className="rounded-lg bg-fuchsia-500/20 px-3 py-1 text-xl font-black text-fuchsia-300">{count}</span>
           </div>
-          <input
-            type="range"
-            min={1}
-            max={40}
-            value={count}
-            onChange={(e) => setCount(Number(e.target.value))}
-            className="mt-4 w-full accent-fuchsia-500"
-          />
-          <div className="mt-1 flex justify-between text-xs text-zinc-500">
-            <span>1</span>
-            <span>40</span>
-          </div>
+          <input type="range" min={1} max={40} value={count}
+            onChange={(e) => setCount(Number(e.target.value))} className="mt-4 w-full accent-fuchsia-500" />
+          <div className="mt-1 flex justify-between text-xs text-zinc-500"><span>1</span><span>40</span></div>
 
           <div className="mt-6 border-t border-zinc-800 pt-5">
             <label className="font-semibold">מצב טקסט</label>
             <div className="mt-3 flex gap-2">
-              {(
-                [
-                  ["auto", "אוטומטי", "עברית → טקסט מדויק, אנגלית → גנרטיבי"],
-                  ["overlay", "טקסט מדויק", "הרקע מיוצר, הטקסט מוטבע בפונט אמיתי — פיקסל-פרפקט"],
-                  ["gpt", "גנרטיבי", "מודל התמונה מצייר גם את הטקסט"],
-                ] as const
-              ).map(([value, label, hint]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setTextMode(value)}
-                  title={hint}
+              {([
+                ["auto", "אוטומטי"],
+                ["overlay", "טקסט מדויק"],
+                ["gpt", "גנרטיבי"],
+              ] as const).map(([value, label]) => (
+                <button key={value} type="button" onClick={() => setTextMode(value)}
                   className={`flex-1 rounded-xl px-3 py-2 text-sm font-bold transition
-                    ${textMode === value ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}
-                >
+                    ${textMode === value ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
                   {label}
                 </button>
               ))}
             </div>
             <p className="mt-2 text-xs text-zinc-500">
-              לקריאייטיבים בעברית מומלץ "אוטומטי" — טקסט עברי תמיד מוטבע בפונט אמיתי כדי
-              להבטיח אותיות מושלמות.
+              לעברית מומלץ "אוטומטי" — הטקסט מוטבע בפונט אמיתי כדי להבטיח אותיות מושלמות.
             </p>
           </div>
         </div>
 
-        {uiError && (
-          <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{uiError}</p>
-        )}
+        {uiError && <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{uiError}</p>}
 
-        <button
-          onClick={start}
-          disabled={!file || submitting}
+        <button onClick={start} disabled={!file || busy}
           className="mt-8 w-full rounded-2xl bg-fuchsia-600 py-4 text-xl font-black transition
-            hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600"
-        >
-          {submitting ? "מפעיל את המכונה..." : `🚀 צור ${count} וריאציות`}
+            hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600">
+          {busy ? "סורק את הקריאייטיב..." : "🚀 סרוק והתחל"}
         </button>
       </div>
     );
   }
 
-  /* ================= review: confirm/correct extracted text ================= */
-  if (job.step === "review" && job.analysis) {
+  /* ================= review ================= */
+  if (phase === "review" && analysis) {
     return (
       <div className="mx-auto max-w-3xl">
         <div className="mb-6 text-center">
@@ -282,9 +415,8 @@ export default function CreativeMachine() {
           </span>
           <h2 className="mt-4 text-2xl font-black text-zinc-100">בדוק שהטקסט נקרא נכון</h2>
           <p className="mx-auto mt-2 max-w-xl text-sm text-zinc-400">
-            המכונה סרקה את הקריאייטיב. תקן כאן כל טעות קריאה — הטקסט הזה יוטבע{" "}
-            <b className="text-zinc-200">מדויק</b> בכל {job.requestedCount} הווריאציות.
-            {job.hasHebrew && " שים לב במיוחד לאותיות דומות (ר/ד, ך/ן, ן/ת)."}
+            תקן כאן כל טעות קריאה — הטקסט יוטבע <b className="text-zinc-200">מדויק</b> בכל {count} הווריאציות.
+            {hasHebrew && " שים לב לאותיות דומות (ר/ד, ך/ן, ן/ת)."}
           </p>
         </div>
 
@@ -292,167 +424,102 @@ export default function CreativeMachine() {
           {previewUrl && (
             <div className="sm:sticky sm:top-4 sm:self-start">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={previewUrl}
-                alt="הקריאייטיב המקורי"
-                className="w-full rounded-xl ring-1 ring-zinc-800"
-              />
+              <img src={previewUrl} alt="הקריאייטיב המקורי" className="w-full rounded-xl ring-1 ring-zinc-800" />
               <p className="mt-2 text-center text-xs text-zinc-500">הקריאייטיב המקורי</p>
             </div>
           )}
-
           <div className="space-y-3">
-            {job.analysis.textBlocks.map((b) => {
-              const isHe = (b.language ?? "").startsWith("he") || /[֐-׿]/.test(b.text);
+            {analysis.textBlocks.map((b) => {
+              const isHe = (b.language ?? "").startsWith("he") || HEBREW_RE.test(edits[b.id] ?? b.text);
               return (
                 <div key={b.id} className="rounded-xl bg-zinc-900/70 p-3 ring-1 ring-zinc-800">
                   <div className="mb-1.5 flex items-center justify-between">
-                    <span className="text-xs font-bold text-zinc-400">
-                      {ROLE_LABELS[b.role] ?? b.role}
-                    </span>
-                    <span className="text-[11px] text-zinc-600">{b.font}</span>
+                    <span className="text-xs font-bold text-zinc-400">{ROLE_LABELS[b.role] ?? b.role}</span>
+                    <span className="text-[11px] text-zinc-600">{b.font.likelyFamily}</span>
                   </div>
-                  <textarea
-                    value={edits[b.id] ?? b.text}
+                  <textarea value={edits[b.id] ?? b.text}
                     onChange={(e) => setEdits((p) => ({ ...p, [b.id]: e.target.value }))}
-                    dir={isHe ? "rtl" : "ltr"}
-                    rows={b.text.includes("\n") ? 2 : 1}
+                    dir={isHe ? "rtl" : "ltr"} rows={(edits[b.id] ?? b.text).includes("\n") ? 2 : 1}
                     className="w-full resize-y rounded-lg bg-zinc-950 px-3 py-2 text-lg text-zinc-100
-                      outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500"
-                  />
+                      outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500" />
                 </div>
               );
             })}
           </div>
         </div>
 
-        {uiError && (
-          <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{uiError}</p>
-        )}
+        {uiError && <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{uiError}</p>}
 
         <div className="mt-8 flex flex-wrap gap-3">
-          <button
-            onClick={confirmText}
-            disabled={confirming}
+          <button onClick={confirmText} disabled={busy}
             className="flex-1 rounded-2xl bg-fuchsia-600 py-4 text-lg font-black transition
-              hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600"
-          >
-            {confirming ? "מתחיל ייצור..." : `✓ אשר וצור ${job.requestedCount} וריאציות`}
+              hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600">
+            {busy ? "מתחיל ייצור..." : `✓ אשר וצור ${count} וריאציות`}
           </button>
-          <button
-            onClick={reset}
-            className="rounded-2xl bg-zinc-800 px-6 py-4 font-black transition hover:bg-zinc-700"
-          >
-            ביטול
-          </button>
+          <button onClick={reset} className="rounded-2xl bg-zinc-800 px-6 py-4 font-black transition hover:bg-zinc-700">ביטול</button>
         </div>
       </div>
     );
   }
 
-  /* ================= running / done ================= */
-  const stepIdx = STEP_ORDER[job.step] ?? 0;
-
+  /* ================= planning / generating / done ================= */
+  const stepIdx = STEP_ORDER[phase] ?? 0;
   return (
     <div>
-      {/* step progress */}
       <div className="mb-8 flex flex-wrap items-center justify-center gap-3">
         {STEPS.map((s, i) => {
           const state = i < stepIdx ? "done" : i === stepIdx ? "active" : "pending";
           return (
-            <div
-              key={s.key}
-              className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold
-                ${state === "done" ? "bg-emerald-500/15 text-emerald-300" : ""}
-                ${state === "active" ? "bg-fuchsia-500/20 text-fuchsia-300 animate-pulse-soft" : ""}
-                ${state === "pending" ? "bg-zinc-800/80 text-zinc-500" : ""}`}
-            >
+            <div key={s.key} className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold
+              ${state === "done" ? "bg-emerald-500/15 text-emerald-300" : ""}
+              ${state === "active" ? "bg-fuchsia-500/20 text-fuchsia-300 animate-pulse-soft" : ""}
+              ${state === "pending" ? "bg-zinc-800/80 text-zinc-500" : ""}`}>
               {state === "done" ? "✓" : state === "active" ? "●" : "○"} {s.label}
-              {s.key === "generating" && stepIdx >= 3 && (
-                <span className="font-black">
-                  {job.doneCount}/{job.requestedCount}
-                </span>
-              )}
+              {s.key === "generating" && stepIdx >= 3 && <span className="font-black">{doneCount}/{count}</span>}
             </div>
           );
         })}
       </div>
 
-      {job.step === "failed" && (
+      {phase === "failed" && (
         <div className="mb-8 rounded-xl bg-red-500/10 p-4 text-center text-red-400">
-          המכונה נעצרה: {job.error ?? "שגיאה לא ידועה"}
-          <button onClick={reset} className="mr-4 underline">
-            התחל מחדש
-          </button>
+          {uiError ?? "המכונה נעצרה"}
+          <button onClick={reset} className="mr-4 underline">התחל מחדש</button>
         </div>
       )}
 
-      {/* analysis summary */}
-      {job.analysis && (
+      {analysis && (
         <div className="mb-8 rounded-2xl bg-zinc-900/60 p-5">
-          <h2 className="mb-3 flex items-center gap-3 font-black text-zinc-300">
+          <h2 className="mb-3 flex flex-wrap items-center gap-3 font-black text-zinc-300">
             🔍 מה המכונה זיהתה
-            {job.renderMode && (
-              <span className="rounded-full bg-sky-500/15 px-3 py-0.5 text-xs font-bold text-sky-300">
-                {job.renderMode === "overlay" ? "✒ טקסט מדויק (פונט אמיתי)" : "🖌 טקסט גנרטיבי"}
-                {job.hasHebrew ? " · עברית" : ""}
-              </span>
-            )}
+            <span className="rounded-full bg-sky-500/15 px-3 py-0.5 text-xs font-bold text-sky-300">
+              {renderMode === "overlay" ? "✒ טקסט מדויק (פונט אמיתי)" : "🖌 טקסט גנרטיבי"}{hasHebrew ? " · עברית" : ""}
+            </span>
           </h2>
           <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
-            <span>
-              <b className="text-zinc-400">מוצר:</b> {job.analysis.product}
-            </span>
-            <span>
-              <b className="text-zinc-400">קטגוריה:</b> {job.analysis.category}
-            </span>
-            <span>
-              <b className="text-zinc-400">זווית נוכחית:</b> {job.analysis.marketingAngle}
-            </span>
+            <span><b className="text-zinc-400">מוצר:</b> {analysis.product}</span>
+            <span><b className="text-zinc-400">קטגוריה:</b> {analysis.category}</span>
           </div>
-          {job.analysis.textBlocks.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {job.analysis.textBlocks.map((t, i) => (
-                <span
-                  key={i}
-                  dir="auto"
-                  className="rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300"
-                  title={`${t.role} · פונט: ${t.font}`}
-                >
-                  ״{t.text.length > 40 ? t.text.slice(0, 40) + "…" : t.text}״
-                </span>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
-      {/* gallery */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {job.variations.map((v) => (
-          <VariationCard key={v.id} v={v} />
-        ))}
-        {job.variations.length === 0 &&
-          Array.from({ length: Math.min(job.requestedCount, 12) }).map((_, i) => (
+        {variations.map((v) => <VariationCard key={v.id} v={v} onDownload={() => downloadOne(v)} />)}
+        {variations.length === 0 &&
+          Array.from({ length: Math.min(count, 12) }).map((_, i) => (
             <div key={i} className="aspect-square animate-pulse-soft rounded-2xl bg-zinc-900/80" />
           ))}
       </div>
 
-      {/* footer actions */}
       <div className="mt-10 flex flex-wrap justify-center gap-4">
-        {job.doneCount > 0 && (
-          <a
-            href={`/api/jobs/${job.id}/zip`}
-            className="rounded-2xl bg-emerald-600 px-8 py-3 font-black transition hover:bg-emerald-500"
-          >
-            ⬇ הורד הכל כ-ZIP ({job.doneCount})
-          </a>
+        {doneCount > 0 && (
+          <button onClick={downloadZip} disabled={zipping}
+            className="rounded-2xl bg-emerald-600 px-8 py-3 font-black transition hover:bg-emerald-500 disabled:opacity-60">
+            {zipping ? "אורז..." : `⬇ הורד הכל כ-ZIP (${doneCount})`}
+          </button>
         )}
-        {(job.step === "done" || job.step === "failed") && (
-          <button
-            onClick={reset}
-            className="rounded-2xl bg-zinc-800 px-8 py-3 font-black transition hover:bg-zinc-700"
-          >
+        {(phase === "done" || phase === "failed") && (
+          <button onClick={reset} className="rounded-2xl bg-zinc-800 px-8 py-3 font-black transition hover:bg-zinc-700">
             🎨 קריאייטיב חדש
           </button>
         )}
@@ -461,61 +528,42 @@ export default function CreativeMachine() {
   );
 }
 
-function VariationCard({ v }: { v: VariationView }) {
-  const statusLabel: Record<VariationView["status"], string> = {
-    planned: "ממתין בתור",
-    prompted: "הנחיה מוכנה",
-    submitted: "נשלח לייצור",
-    generating: "מייצר...",
-    done: "מוכן",
-    failed: "נכשל",
+function VariationCard({ v, onDownload }: { v: Variation; onDownload: () => void }) {
+  const statusLabel: Record<VarStatus, string> = {
+    planned: "ממתין בתור", submitted: "נשלח לייצור", generating: "מייצר...", done: "מוכן", failed: "נכשל",
   };
-
   return (
     <div className="overflow-hidden rounded-2xl bg-zinc-900/80 ring-1 ring-zinc-800">
       <div className="relative aspect-square bg-zinc-950">
-        {v.imageReady && v.imageUrl ? (
+        {v.blobUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={v.imageUrl} alt={v.marketingAngle} className="h-full w-full object-contain" />
+          <img src={v.blobUrl} alt={v.marketingAngle} className="h-full w-full object-contain" />
         ) : (
           <div className="flex h-full items-center justify-center">
-            {v.status === "failed" ? (
-              <span className="px-4 text-center text-sm text-red-400">✗ {v.error ?? "נכשל"}</span>
-            ) : (
-              <span className="animate-pulse-soft text-4xl">✨</span>
-            )}
+            {v.status === "failed"
+              ? <span className="px-4 text-center text-sm text-red-400">✗ {v.error ?? "נכשל"}</span>
+              : <span className="animate-pulse-soft text-4xl">✨</span>}
           </div>
         )}
-        <span
-          className={`absolute top-2 left-2 rounded-full px-2 py-0.5 text-[11px] font-bold
-            ${v.status === "done" ? "bg-emerald-500/90 text-black" : ""}
-            ${v.status === "failed" ? "bg-red-500/90 text-white" : ""}
-            ${!["done", "failed"].includes(v.status) ? "bg-zinc-700/90 text-zinc-200" : ""}`}
-        >
+        <span className={`absolute top-2 left-2 rounded-full px-2 py-0.5 text-[11px] font-bold
+          ${v.status === "done" ? "bg-emerald-500/90 text-black" : ""}
+          ${v.status === "failed" ? "bg-red-500/90 text-white" : ""}
+          ${!["done", "failed"].includes(v.status) ? "bg-zinc-700/90 text-zinc-200" : ""}`}>
           {statusLabel[v.status]}
         </span>
       </div>
       <div className="p-4">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="font-black text-fuchsia-300">
-            {v.id} · {v.marketingAngle}
-          </h3>
-          {v.imageReady && v.imageUrl && (
-            <a
-              href={v.imageUrl}
-              download={`bulcreative-${v.id}.png`}
-              className="shrink-0 rounded-lg bg-zinc-800 px-2 py-1 text-xs font-bold hover:bg-zinc-700"
-            >
-              ⬇ הורדה
-            </a>
+          <h3 className="font-black text-fuchsia-300">{v.id} · {v.marketingAngle}</h3>
+          {v.blobUrl && (
+            <button onClick={onDownload}
+              className="shrink-0 rounded-lg bg-zinc-800 px-2 py-1 text-xs font-bold hover:bg-zinc-700">⬇ הורדה</button>
           )}
         </div>
         {v.angleRationale && <p className="mt-1 text-xs text-zinc-500">{v.angleRationale}</p>}
         {v.visualChanges.length > 0 && (
           <ul className="mt-2 space-y-1 text-xs text-zinc-400">
-            {v.visualChanges.slice(0, 3).map((c, i) => (
-              <li key={i}>• {c}</li>
-            ))}
+            {v.visualChanges.slice(0, 3).map((c, i) => <li key={i}>• {c}</li>)}
           </ul>
         )}
       </div>

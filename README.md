@@ -39,38 +39,52 @@ npm run dev
 
 פתח `http://localhost:3000`, גרור קריאייטיב (PNG/JPEG/WebP עד 9MB), בחר כמות וריאציות (1–40) ולחץ צור.
 
-## ארכיטקטורה
+## ארכיטקטורה (חסרת-מצב — רצה גם ב-Vercel)
+
+הצינור מתוזמן ב**צד-לקוח**: הדפדפן קורא לשרשרת של routes קצרים וחסרי-מצב, והמצב + התמונות
+חיים בדפדפן. אין job-store בשרת ואין כתיבה לדיסק — כך זה עובד גם על שרת רגיל וגם על Vercel serverless
+(שם כל פונקציה קצרה ומבודדת). מפתחות ה-API נשארים בשרת בלבד ולא נחשפים ללקוח.
 
 ```
 app/
-  page.tsx                          # מסך יחיד: העלאה → התקדמות → גלריה (עברית, RTL)
-  api/jobs/route.ts                 # POST — יצירת משימת bulk והפעלת הצינור
-  api/jobs/[id]/route.ts            # GET — סטטוס חי (ה-UI עושה polling כל 2 שניות)
-  api/jobs/[id]/images/[vid]/route.ts  # GET — הגשת תמונה מוכנה מהדיסק המקומי
-  api/jobs/[id]/zip/route.ts        # GET — הורדת כל התוצאות כ-ZIP
+  page.tsx                # מסך יחיד (עברית, RTL)
+  api/analyze/route.ts    # POST file → העלאה ל-KIE (sourceUrl) + ניתוח MiniMax → {analysis, sourceUrl, renderMode}
+  api/plan/route.ts       # POST → מנת בריפים+פרומפטים (עד 10); הלקוח קורא שוב עד שמגיע ל-count
+  api/generate/route.ts   # POST {prompt, sourceUrl} → {taskId} (יצירת משימת KIE)
+  api/kie-status/route.ts # GET ?taskId → {state, resultUrl}
+  api/image/route.ts      # POST {resultUrl, mode, analysis?} → בייטים סופיים (overlay מרכיב טקסט; אחרת proxy)
+components/
+  CreativeMachine.tsx     # מתזמן את כל הצינור בצד-לקוח + ZIP בדפדפן (JSZip)
 lib/
-  jobs.ts        # ה-orchestrator: store + צינור מלא + ניהול תור מול rate limits
-  minimax.ts     # עטיפת OpenRouter: ראייה, thinking on/off, JSON + ולידציית Zod עם retry
-  kie.ts         # עטיפת KIE: העלאת קובץ, createTask, polling, הורדה מיידית
-  skills.ts      # טעינת מסמכי Skills והרכבת system prompts
-  schemas.ts     # סכמות Zod לכל פלט מודל + טיפוסי מצב המשימה
-  fetch.ts       # fetch יוצא שמכבד HTTPS_PROXY כשקיים
-skills/
-  01-analyze-creative.md       # איך לסרוק קריאייטיב (טקסט verbatim, פורנזיקת פונטים)
-  02-variation-strategy.md     # איך לבנות בריפים עם זוויות שיווקיות מגוונות
-  03-image-prompt-authoring.md # איך לכתוב prompt מנצח ל-GPT Image 2
-  _shared/style-guardrails.md  # כללי הברזל: טקסט/פונט/מותג/מוצר קדושים
+  pipeline.ts   # פונקציות טהורות: analyzeCreative, planChunk, resolveRenderMode, toKieAspectRatio
+  minimax.ts    # עטיפת OpenRouter: ראייה, thinking on/off, JSON + ולידציית Zod עם retry
+  kie.ts        # עטיפת KIE: העלאת קובץ, createTask, polling, הורדה (retry + אימות פורמט)
+  overlay.ts    # הרכבת טקסט על רקע (Skia) + ניקוי chunks של C2PA מ-PNG
+  fonts.ts      # רישום פונטים מוטמעים + מיפוי traits→פונט (עברי/לטיני)
+  skills.ts / schemas.ts / fetch.ts
+skills/         # מסמכי ההנחיה לכל שלב (01-analyze / 02-strategy / 03-prompt / _shared)
 ```
 
 ### נקודות עיצוב חשובות
 
-- **URL תוצאה של KIE פג אחרי ~20 דקות** — לכן כל תמונה מורדת לדיסק (`.data/`) ברגע שהיא מוכנה,
-  וה-UI מגיש אותה מקומית.
-- **Rate limit של KIE (~20 בקשות/10 שניות)** — שליחת המשימות מרווחת (700ms בין משימות)
-  עם backoff אקספוננציאלי על 429.
-- **אמינות JSON בכמויות גדולות** — בריפים ופרומפטים נוצרים במנות של 10, עם ולידציית Zod
-  ו-retry אוטומטי שמזין למודל את שגיאת הוולידציה.
-- **וריאציה שנכשלת** מקבלת ניסיון ייצור נוסף אוטומטית לפני שהיא מסומנת ככשלון.
+- **חסר-מצב**: כל בקשה קצרה; אין תלות בזיכרון/דיסק משותף. מתאים ל-Vercel serverless.
+- **URL תוצאה של KIE פג אחרי ~20 דקות** — הלקוח מושך כל תמונה מיד דרך `/api/image` לבלוב בדפדפן.
+- **Rate limit של KIE (~20/10ש)** — הלקוח מרווח שליחות (700ms) עם backoff על 429.
+- **C2PA**: פלטי GPT-Image מכילים chunks של Content Credentials ש-Skia לא מפרסר; `overlay.ts` מנקה
+  אותם לפני ההרכבה.
+- **הורדת תמונה עמידה**: `downloadImage` מנסה 5 פעמים ומאמת magic-bytes של PNG/JPEG/WebP.
+
+## פריסה ל-Vercel
+
+1. חבר את הריפו ל-Vercel (Import Project). Framework = Next.js (מזוהה אוטומטית).
+2. הוסף Environment Variables: `OPENROUTER_API_KEY`, `KIE_API_KEY` (ל-Production ו-Preview).
+3. Deploy. הפונטים (`assets/fonts`) וה-skills נכללים אוטומטית ב-functions דרך
+   `outputFileTracingIncludes` ב-`next.config.ts`; ה-binary של `@napi-rs/canvas` נכלל דרך
+   `serverExternalPackages`.
+4. **הערת מסלול (plan):** ל-`/api/analyze` ו-`/api/plan` יש `maxDuration = 60`. חשיבת MiniMax
+   על תמונה עשויה להתקרב ל-60ש — אם תראה timeouts, פרוס ב-Vercel **Pro** (עד 300ש) או הקטן
+   כמות במנה. שאר ה-routes קצרים.
+5. אין צורך ב-DB/Blob — המצב והתמונות בדפדפן.
 
 ## דיוק טקסט ועברית — איך זה מובטח
 
@@ -80,10 +94,10 @@ skills/
   מוטבע בשרת בפונט אמיתי (`@napi-rs/canvas` + Skia) עם יישור RTL — פיקסל-פרפקט, אותיות סופיות שלמות.
 - **מצב GPT** — לאנגלית, GPT Image 2 מרנדר את הטקסט בעצמו (מהיר; טוב מאוד ללטינית).
 
-## עמידות (persistence)
+## הערה על קרדיטים
 
-מצב כל משימה נשמר ל-`.data/jobs/<id>/state.json` בכל מעבר שלב, וה-store נטען מחדש מהדיסק
-בכל בקשה. משימה שנקטעה ב-restart מתייצבת למצב סופי (תמונות שהושלמו נשמרות) במקום להיתקע.
+ייצור התמונות צורך קרדיטים בחשבון KIE.AI. אם היתרה נגמרת, ה-UI מציג הודעה ברורה
+("אין מספיק קרדיטים בחשבון KIE") — יש להטעין יתרה ב-[kie.ai](https://kie.ai).
 
 ## מפת דרכים (שלב 2)
 
