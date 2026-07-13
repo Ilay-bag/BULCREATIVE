@@ -15,9 +15,19 @@ especially the EXACT text and typography.
    maximum attention for tiny, low-contrast text — legal lines, disclaimers, terms
    ("Limited time offer", "T&C apply"), website URLs, hashtags. These are the most commonly
    missed blocks and missing one fails the task. If genuinely no such text exists, move on.
-1b. **Hebrew creatives (עברית) — extra care.** Many creatives are in Hebrew. When reading Hebrew:
+1b. **Hebrew creatives (עברית) — extra care.** Many creatives are in Hebrew. Hebrew text is
+   composited later with a real font, so your transcription IS the final text — a single wrong
+   letter ships. Read with maximum care:
    - Read RIGHT-TO-LEFT. Never reverse letter order inside a word or word order inside a line.
    - Preserve final letterforms exactly (ם ן ץ ף ך vs מ נ צ פ כ) — swapping them fails the task.
+   - **Disambiguate look-alike letters carefully — these are the most common misreads:**
+     ר vs ד (resh has a rounded top-right corner; dalet has a small top-right serif/tick),
+     ך (final khaf, descends below the line) vs ב (bet, sits on the line with a bottom foot)
+       vs ן (final nun, a thin vertical descending stroke),
+     ן (final nun) vs ת (tav, has a distinct left leg) vs ו (vav, short),
+     ה (he, open bottom-left gap) vs ח (het, closed top) vs ת,
+     ו vs ז vs ן, ס vs ם, כ vs ב, and ג vs נ.
+     When a word is a real Hebrew word, sanity-check that your reading forms that actual word.
    - Preserve niqqud (vowel points) only if actually printed; do not add or remove it.
    - Mixed content ("30% הנחה", brand names in Latin inside Hebrew lines) — keep each token
      exactly as printed, in logical reading order.
@@ -25,6 +35,8 @@ especially the EXACT text and typography.
    - Hebrew font identification: compare against common Israeli ad faces — Heebo, Rubik,
      Assistant, Secular One (display), Frank Ruhl Libre (serif), Alef, Varela Round.
      Name the closest match in `likelyFamily`.
+   - After drafting each Hebrew block, RE-READ it letter by letter against the image once more
+     before finalizing. This double-check is mandatory for Hebrew.
 2. **Identify typography per block.** If you recognize the exact font, name it. Otherwise give
    the closest well-known match (e.g. "close to Montserrat") plus objective traits:
    serif/sans/slab/script/display, weight (300/400/700/900), case (UPPERCASE/Title/lower),
