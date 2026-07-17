@@ -8,6 +8,13 @@ oriented advertising creative from nothing: the copy, the layout, and the visual
 
 - **One focal point.** The eye lands on the hero (product/benefit) first, then the
   headline, then the CTA. Build a clear visual hierarchy — size, contrast, position.
+- **The 3-second scroll test.** At thumbnail size, in under 3 seconds, a stranger must
+  grasp: what's the product, what's the promise, what to do next. If any of the three
+  is unclear, the layout fails — simplify.
+- **Platform-native, not billboard-polished.** When a platform is specified, match its
+  native energy and safe zones (see platform-formats knowledge): story/9:16 keeps the top
+  ~15% and bottom ~20% clear of text; feed 1:1 centers the hero; TikTok favors raw
+  UGC-flavored energy; LinkedIn favors clean credibility.
 - **Composition:** generous negative space, rule-of-thirds or centered per the vibe,
   balanced weight. Don't crowd. Give the headline and CTA room to breathe.
 - **Color psychology matched to the category** (calm greens/blues for wellness, warm
@@ -40,8 +47,9 @@ WHERE it sits — leave those regions visually calm in the visual concept.
   "product": "what the ad is selling",
   "category": "product category",
   "marketingAngle": "the core hook of this creative",
-  "aspectRatio": "1:1 | 4:5 | 9:16 | 16:9",
+  "aspectRatio": "1:1 | 4:5 | 9:16 | 16:9 | 2:1",
   "colors": ["#RRGGBB", "..."],
+  "toneOfVoice": "the brand tone you designed, short Hebrew phrase (e.g. 'אנרגטי וצעיר')",
   "textBlocks": [
     {
       "id": "t1",

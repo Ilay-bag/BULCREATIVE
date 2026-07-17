@@ -11,16 +11,24 @@ interface TextBlock {
 }
 interface Analysis {
   textBlocks: TextBlock[]; product: string; category: string;
-  marketingAngle: string; aspectRatio?: string; colors?: string[]; [k: string]: unknown;
+  marketingAngle: string; aspectRatio?: string; colors?: string[];
+  toneOfVoice?: string; [k: string]: unknown;
+}
+interface Score {
+  hook: number; hierarchy: number; cta: number; legibility: number;
+  total: number; verdict?: string;
 }
 type VarStatus = "planned" | "submitted" | "generating" | "done" | "failed";
 interface Variation {
-  id: string; marketingAngle: string; angleRationale: string; visualChanges: string[];
+  id: string; angleCategory?: string; marketingAngle: string; angleRationale: string;
+  visualChanges: string[];
   prompt: string; taskId?: string; status: VarStatus; error?: string;
   blob?: Blob; blobUrl?: string; retries: number; imgFails: number;
+  score?: Score; scoring?: boolean;
 }
 type Mode = "home" | "variations" | "new";
 type Phase = "input" | "busy" | "review" | "generating" | "done" | "failed";
+type Platform = "meta-feed" | "story" | "tiktok" | "linkedin" | "free";
 interface ChatMsg { role: "user" | "assistant"; content: string }
 
 const PLAN_CHUNK = 10, CREATE_GAP_MS = 700, POLL_INTERVAL_MS = 5000, MAX_RETRIES = 2;
@@ -30,6 +38,27 @@ const ROLE_LABELS: Record<string, string> = {
   headline: "כותרת", subheadline: "כותרת משנה", cta: "כפתור פעולה", badge: "תג",
   price: "מחיר", legal: "משפטי", "logo-wordmark": "לוגו", other: "אחר",
 };
+
+const PLATFORMS: { key: Platform; label: string; ratio: string }[] = [
+  { key: "meta-feed", label: "Meta פיד", ratio: "1:1" },
+  { key: "story", label: "סטורי", ratio: "9:16" },
+  { key: "tiktok", label: "TikTok", ratio: "9:16" },
+  { key: "linkedin", label: "LinkedIn", ratio: "2:1" },
+  { key: "free", label: "חופשי", ratio: "1:1" },
+];
+
+const ANGLE_LABELS: Record<string, string> = {
+  pain: "כאב", outcome: "תוצאה", "social-proof": "הוכחה חברתית", curiosity: "סקרנות",
+  comparison: "השוואה", urgency: "דחיפות", identity: "זהות", contrarian: "קונטרריאני",
+};
+
+const blobToDataUrl = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
 
 export default function CreativeMachine() {
   const [mode, setMode] = useState<Mode>("home");
@@ -43,6 +72,7 @@ export default function CreativeMachine() {
   const [productFile, setProductFile] = useState<File | null>(null);
   const [productPreview, setProductPreview] = useState<string | null>(null);
   const [aspectRatio, setAspectRatio] = useState("1:1");
+  const [platform, setPlatform] = useState<Platform>("free");
   // shared
   const [count, setCount] = useState(6);
   const [textMode, setTextMode] = useState<"auto" | "overlay" | "gpt">("auto");
@@ -105,6 +135,7 @@ export default function CreativeMachine() {
       const form = new FormData();
       form.append("brief", b);
       form.append("aspectRatio", ratio ?? aspectRatio);
+      form.append("platform", platform);
       form.append("textMode", textMode);
       if (productFile) form.append("productImage", productFile);
       const res = await fetch("/api/design-new", { method: "POST", body: form });
@@ -166,14 +197,14 @@ export default function CreativeMachine() {
     const all: Planned[] = [];
     // in "new" mode honor the exact designed concept as the first creative
     if (mode === "new" && platePrompt) {
-      all.push({ id: "v1", marketingAngle: a.marketingAngle, angleRationale: "העיצוב המקורי שלך", visualChanges: [], prompt: platePrompt });
+      all.push({ id: "v1", angleCategory: "outcome", marketingAngle: a.marketingAngle, angleRationale: "העיצוב המקורי שלך", visualChanges: [], prompt: platePrompt });
     }
     const maxRounds = Math.ceil(count / PLAN_CHUNK) + 3;
     for (let r = 0; all.length < count && r < maxRounds; r++) {
       const need = Math.min(PLAN_CHUNK, count - all.length);
       const res = await fetch("/api/plan", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need, startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle) }),
+        body: JSON.stringify({ analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need, startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle), platform }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "שגיאה בתכנון");
@@ -219,6 +250,7 @@ export default function CreativeMachine() {
             if (imgRes.ok) {
               const blob = await imgRes.blob();
               v.blob = blob; v.blobUrl = URL.createObjectURL(blob); v.status = "done";
+              void scoreOne(v, a); // fire-and-forget pre-spend scoring
             } else { v.imgFails += 1; if (v.imgFails >= 3) { v.status = "failed"; v.error = "התמונה נוצרה אך ההורדה נכשלה"; } }
           } else if (info.state === "fail") {
             if (v.retries < MAX_RETRIES) { v.retries += 1; await sleep(4000); await submitOne(v, a); }
@@ -233,6 +265,62 @@ export default function CreativeMachine() {
     syncVars(vars);
   };
 
+  /* ---------- pre-spend scorecard ---------- */
+  const scoreOne = async (v: Variation, a: Analysis) => {
+    if (!v.blob) return;
+    v.scoring = true; syncVars(varsRef.current);
+    try {
+      // downscale isn't needed — the API handles data URLs; send as-is
+      const imageDataUrl = await blobToDataUrl(v.blob);
+      const res = await fetch("/api/score", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl, analysis: a, platform }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        v.score = data.score;
+      }
+    } catch { /* scoring is best-effort */ }
+    v.scoring = false; syncVars(varsRef.current);
+  };
+
+  /** Regenerate a single weak variation: resubmit its prompt and poll it alone. */
+  const regenerateOne = async (id: string) => {
+    const a = analysis; if (!a) return;
+    const v = varsRef.current.find((x) => x.id === id); if (!v) return;
+    if (v.blobUrl) URL.revokeObjectURL(v.blobUrl);
+    v.blob = undefined; v.blobUrl = undefined; v.score = undefined; v.error = undefined;
+    v.status = "planned"; syncVars(varsRef.current);
+    await submitOne(v, a); syncVars(varsRef.current);
+    const m = renderMode;
+    const deadline = Date.now() + 10 * 60 * 1000;
+    // read via a helper: submitOne/poll mutate v.status in ways TS can't track
+    const live = () => v.status === "submitted" || v.status === "generating";
+    while (Date.now() < deadline && live()) {
+      await sleep(POLL_INTERVAL_MS);
+      try {
+        const res = await fetch(`/api/kie-status?taskId=${encodeURIComponent(v.taskId!)}`);
+        if (res.status === 429) continue;
+        const info = await res.json();
+        if (info.state === "success" && info.resultUrl) {
+          const imgRes = await fetch("/api/image", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ resultUrl: info.resultUrl, mode: m, analysis: m === "overlay" ? a : undefined }),
+          });
+          if (imgRes.ok) {
+            const blob = await imgRes.blob();
+            v.blob = blob; v.blobUrl = URL.createObjectURL(blob); v.status = "done";
+            void scoreOne(v, a);
+          } else { v.status = "failed"; v.error = "הורדת התמונה נכשלה"; }
+        } else if (info.state === "fail") { v.status = "failed"; v.error = info.failMsg ?? "הייצור נכשל"; }
+        else if (info.state === "generating") v.status = "generating";
+      } catch { /* transient */ }
+      syncVars(varsRef.current);
+    }
+    if (live()) { v.status = "failed"; v.error = "חריגה מזמן ההמתנה"; }
+    syncVars(varsRef.current);
+  };
+
   /* ---------- chat controller ---------- */
   const sendChat = async () => {
     const text = chatInput.trim();
@@ -241,7 +329,7 @@ export default function CreativeMachine() {
     setMessages(next); setChatInput(""); setChatBusy(true);
     try {
       const state = {
-        mode, phase, hasCreative: !!analysis, count, textMode,
+        mode, phase, hasCreative: !!analysis, count, textMode, platform,
         product: analysis?.product,
         textBlocks: analysis?.textBlocks.map((b) => ({ id: b.id, role: b.role, text: edits[b.id] ?? b.text })),
       };
@@ -269,6 +357,11 @@ export default function CreativeMachine() {
         if (typeof p.count === "number") setCount(Math.min(Math.max(p.count, 1), 40));
         if (action.type === "make_variations" && phase === "review") await confirmAndGenerate();
         break;
+      case "set_platform": {
+        const pl = PLATFORMS.find((x) => x.key === p.platform);
+        if (pl) { setPlatform(pl.key); setAspectRatio(pl.ratio); }
+        break;
+      }
       case "set_text_mode":
         if (["auto", "overlay", "gpt"].includes(p.textMode)) setTextMode(p.textMode);
         break;
@@ -341,6 +434,7 @@ export default function CreativeMachine() {
           {previewUrl ? <img src={previewUrl} alt="" className="mx-auto max-h-72 rounded-lg" />
             : <><div className="text-5xl">🎨</div><p className="mt-4 text-lg font-semibold">גרור קריאייטיב או לחץ לבחירה</p><p className="mt-1 text-sm text-zinc-500">PNG / JPEG / WebP · עד 9MB</p></>}
         </div>
+        {platformSelector()}
         {sharedControls()}
         {uiError && <ErrBox msg={uiError} />}
         <button onClick={startVariations} disabled={!file || busy} className={btnPrimary}>{busy ? "סורק..." : "🚀 סרוק והתחל"}</button>
@@ -364,17 +458,32 @@ export default function CreativeMachine() {
           <input ref={prodRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "product")} />
           {productPreview && <img src={productPreview} alt="" className="h-12 w-12 rounded-lg object-cover ring-1 ring-zinc-700" />}
         </div>
-        <div className="mt-4">
-          <label className="mb-2 block text-sm font-semibold text-zinc-400">פורמט</label>
-          <div className="flex gap-2">
-            {(["1:1", "4:5", "9:16", "16:9"] as const).map((r) => (
-              <button key={r} onClick={() => setAspectRatio(r)} className={`flex-1 rounded-xl px-3 py-2 text-sm font-bold ${aspectRatio === r ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>{r}</button>
-            ))}
-          </div>
-        </div>
+        {platformSelector()}
         {sharedControls()}
         {uiError && <ErrBox msg={uiError} />}
         <button onClick={() => startNew()} disabled={busy || brief.trim().length < 3} className={btnPrimary}>{busy ? "מעצב..." : "✨ עצב מודעה"}</button>
+      </div>
+    );
+  }
+
+  function platformSelector() {
+    return (
+      <div className="mt-4">
+        <label className="mb-2 block text-sm font-semibold text-zinc-400">פלטפורמת יעד</label>
+        <div className="flex flex-wrap gap-2">
+          {PLATFORMS.map((p) => (
+            <button
+              key={p.key}
+              onClick={() => { setPlatform(p.key); setAspectRatio(p.ratio); }}
+              className={`flex-1 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-bold ${platform === p.key ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}
+            >
+              {p.label} <span className="text-[10px] opacity-70">{p.ratio}</span>
+            </button>
+          ))}
+        </div>
+        {(platform === "story" || platform === "tiktok") && (
+          <p className="mt-2 text-xs text-zinc-500">אזורים בטוחים נאכפים אוטומטית: 15% עליונים ו-20% תחתונים נשארים נקיים.</p>
+        )}
       </div>
     );
   }
@@ -410,6 +519,29 @@ export default function CreativeMachine() {
             {improving ? "משכלל..." : "✨ שכלל קופי + הסר טביעות AI"}
           </button>
         </div>
+
+        {/* Brand Kit — extracted identity, reused across every generation */}
+        {((analysis!.colors?.length ?? 0) > 0 || analysis!.toneOfVoice) && (
+          <div className="mb-5 rounded-xl bg-zinc-900/70 p-4 ring-1 ring-zinc-800">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-black text-zinc-300">🎨 Brand Kit שזוהה</span>
+              <span className="text-[10px] text-zinc-600">מוזרק לכל הווריאציות</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {(analysis!.colors ?? []).slice(0, 6).map((c, i) => (
+                <span key={i} className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                  <span className="inline-block h-5 w-5 rounded-md ring-1 ring-zinc-700" style={{ backgroundColor: c }} />
+                  <span className="mono" dir="ltr">{c}</span>
+                </span>
+              ))}
+              {analysis!.toneOfVoice && (
+                <span className="rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-300">
+                  טון: {analysis!.toneOfVoice}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-[220px_1fr]">
           {(previewUrl || productPreview) && (
             <div className="sm:sticky sm:top-4 sm:self-start">
@@ -446,6 +578,15 @@ export default function CreativeMachine() {
     );
   }
 
+  /** When the run is complete, rank by scorecard total (unscored last, failed at the end). */
+  function sortedVariations(): Variation[] {
+    if (phase !== "done") return variations;
+    return [...variations].sort((a, b) => {
+      if ((a.status === "failed") !== (b.status === "failed")) return a.status === "failed" ? 1 : -1;
+      return (b.score?.total ?? -1) - (a.score?.total ?? -1);
+    });
+  }
+
   /* ----- gallery ----- */
   function renderGallery() {
     const steps = ["מתכנן", "מייצר"];
@@ -460,8 +601,13 @@ export default function CreativeMachine() {
           ))}
         </div>
         {phase === "failed" && <div className="mb-6 rounded-xl bg-red-500/10 p-4 text-center text-red-400">{uiError ?? "נעצר"} <button onClick={reset} className="mr-3 underline">התחל מחדש</button></div>}
+        {phase === "done" && variations.some((v) => v.score) && (
+          <p className="mb-4 text-center text-xs text-zinc-500">📊 ממוין לפי ציון ה-Scorecard — הכי חזק ראשון</p>
+        )}
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
-          {variations.map((v) => <VarCard key={v.id} v={v} onDownload={() => downloadOne(v)} />)}
+          {sortedVariations().map((v) => (
+            <VarCard key={v.id} v={v} onDownload={() => downloadOne(v)} onRegenerate={() => regenerateOne(v.id)} />
+          ))}
           {variations.length === 0 && Array.from({ length: Math.min(count, 6) }).map((_, i) => <div key={i} className="aspect-square animate-pulse-soft rounded-2xl bg-zinc-900/80" />)}
         </div>
         <div className="mt-8 flex flex-wrap justify-center gap-4">
@@ -510,21 +656,50 @@ function ErrBox({ msg }: { msg: string }) {
   return <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{msg}</p>;
 }
 
-function VarCard({ v, onDownload }: { v: Variation; onDownload: () => void }) {
+function ScoreBadge({ score }: { score: Score }) {
+  const t = score.total;
+  const color = t >= 7 ? "bg-emerald-500/90 text-black" : t >= 5.5 ? "bg-amber-400/90 text-black" : "bg-red-500/90 text-white";
+  return (
+    <span
+      className={`absolute top-2 right-2 rounded-full px-2 py-0.5 text-[12px] font-black ${color}`}
+      title={`Hook ${score.hook} · היררכיה ${score.hierarchy} · CTA ${score.cta} · קריאות ${score.legibility}`}
+    >
+      📊 {t.toFixed(1)}
+    </span>
+  );
+}
+
+function VarCard({ v, onDownload, onRegenerate }: { v: Variation; onDownload: () => void; onRegenerate: () => void }) {
   const labels: Record<VarStatus, string> = { planned: "בתור", submitted: "נשלח", generating: "מייצר...", done: "מוכן", failed: "נכשל" };
+  const weak = v.status === "done" && v.score && v.score.total < 6;
   return (
     <div className="overflow-hidden rounded-2xl bg-zinc-900/80 ring-1 ring-zinc-800">
       <div className="relative aspect-square bg-zinc-950">
         {v.blobUrl ? <img src={v.blobUrl} alt={v.marketingAngle} className="h-full w-full object-contain" />
           : <div className="flex h-full items-center justify-center">{v.status === "failed" ? <span className="px-4 text-center text-sm text-red-400">✗ {v.error}</span> : <span className="animate-pulse-soft text-4xl">✨</span>}</div>}
         <span className={`absolute top-2 left-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${v.status === "done" ? "bg-emerald-500/90 text-black" : v.status === "failed" ? "bg-red-500/90 text-white" : "bg-zinc-700/90 text-zinc-200"}`}>{labels[v.status]}</span>
+        {v.score && <ScoreBadge score={v.score} />}
+        {v.scoring && <span className="absolute top-2 right-2 rounded-full bg-zinc-700/90 px-2 py-0.5 text-[11px] text-zinc-300 animate-pulse-soft">מנקד...</span>}
       </div>
       <div className="p-4">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="font-black text-fuchsia-300">{v.id} · {v.marketingAngle}</h3>
+          <h3 className="font-black text-fuchsia-300">
+            {v.id} · {v.marketingAngle}
+            {v.angleCategory && ANGLE_LABELS[v.angleCategory] && (
+              <span className="mr-2 rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] font-bold text-zinc-400">
+                {ANGLE_LABELS[v.angleCategory]}
+              </span>
+            )}
+          </h3>
           {v.blobUrl && <button onClick={onDownload} className="shrink-0 rounded-lg bg-zinc-800 px-2 py-1 text-xs font-bold hover:bg-zinc-700">⬇</button>}
         </div>
-        {v.angleRationale && <p className="mt-1 text-xs text-zinc-500">{v.angleRationale}</p>}
+        {v.score?.verdict && <p className="mt-1 text-xs text-zinc-400">💬 {v.score.verdict}</p>}
+        {!v.score?.verdict && v.angleRationale && <p className="mt-1 text-xs text-zinc-500">{v.angleRationale}</p>}
+        {weak && (
+          <button onClick={onRegenerate} className="mt-2 w-full rounded-lg bg-amber-500/15 px-2 py-1.5 text-xs font-bold text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25">
+            🔄 ציון נמוך — ייצר מחדש
+          </button>
+        )}
       </div>
     </div>
   );

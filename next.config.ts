@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
     "/api/design-new": ["./skills/**"],
     "/api/chat": ["./skills/**"],
     "/api/rewrite": ["./skills/**"],
+    "/api/score": ["./skills/**"],
   },
   experimental: {
     serverActions: { bodySizeLimit: "15mb" },

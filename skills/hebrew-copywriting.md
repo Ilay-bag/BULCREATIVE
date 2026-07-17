@@ -14,6 +14,14 @@ tells that expose AI-generated writing.
   where the product implies one (קני / קנה / הזמינו / גלה / התחילי עכשיו).
 - **Rhythm:** short, punchy lines. Hebrew ad copy is tight — cut every word that
   doesn't earn its place. Read it aloud; if it stumbles, rewrite it.
+- **The 125-character hook rule:** on social platforms only the first ~125 characters of
+  primary text are visible before truncation. The hook — pain, promise, or number — must
+  land inside them. Never open with throat-clearing.
+- **Specificity beats adjectives:** "תוך 5 דקות" ולא "מהר"; "8,000 לקוחות" ולא "אלפי לקוחות";
+  numbers, timeframes and concrete outcomes over generic praise.
+- **Platform character budgets** (when writing platform copy): Meta — headline ≤40,
+  description ≤30; TikTok ad text ≤80; LinkedIn intro ≤150 recommended. On-image headlines:
+  ≤ ~6 words, readable at thumbnail size.
 - **Local voice:** natural Israeli phrasing and idiom, not translated-from-English
   cadence. Prices in ₪, local urgency ("רק היום", "עד גמר המלאי"), local trust
   ("משלוח מהיר", "אחריות").

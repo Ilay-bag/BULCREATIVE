@@ -27,6 +27,7 @@ export async function POST(req: NextRequest) {
   const rawImg = typeof body?.imageUrl === "string" ? body.imageUrl : "";
   const imageUrl = rawImg && rawImg !== "scratch" ? rawImg : undefined;
   const renderMode = body?.renderMode === "overlay" ? "overlay" : "gpt";
+  const platform = typeof body?.platform === "string" ? body.platform : undefined;
   const need = Math.min(Math.max(Number(body?.need) || 1, 1), 10);
   const startIndex = Math.max(Number(body?.startIndex) || 1, 1);
   const usedAngles: string[] = Array.isArray(body?.usedAngles)
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
       startIndex,
       usedAngles,
       renderMode,
+      platform,
     });
     return NextResponse.json({ variations });
   } catch (err) {

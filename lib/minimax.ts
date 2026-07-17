@@ -40,6 +40,8 @@ async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean)
     ],
     max_tokens: opts.maxTokens ?? 16000,
     temperature: opts.thinking ? 0.7 : 0.3,
+    // prefer the fastest available provider for this model (mitigates slow-provider periods)
+    provider: { sort: "throughput" },
   };
   if (includeReasoningParam) {
     // OpenRouter unified reasoning control; MiniMax M3 supports toggleable thinking.

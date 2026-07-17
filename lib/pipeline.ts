@@ -11,8 +11,10 @@ import {
   CreativeSpecSchema,
   PromptsResponseSchema,
   RewriteResponseSchema,
+  ScoreSchema,
   type ChatAction,
   type CreativeAnalysis,
+  type CreativeScore,
   type CreativeSpec,
   type RenderMode,
   type TextMode,
@@ -57,6 +59,7 @@ export async function analyzeCreative(imageUrl: string): Promise<CreativeAnalysi
 
 export interface PlannedVariation {
   id: string;
+  angleCategory: string;
   marketingAngle: string;
   angleRationale: string;
   visualChanges: string[];
@@ -75,21 +78,25 @@ export async function planChunk(params: {
   startIndex: number;
   usedAngles: string[];
   renderMode: RenderMode;
+  platform?: string;
 }): Promise<PlannedVariation[]> {
-  const { analysis, imageUrl, need, startIndex, usedAngles, renderMode } = params;
+  const { analysis, imageUrl, need, startIndex, usedAngles, renderMode, platform } = params;
+  const platformLine =
+    platform && platform !== "free" ? `PLATFORM: ${platform} — apply its native look and safe zones.` : "";
 
   // 2a. briefs
   const briefsRes = await callMiniMaxJson(
     {
-      system: systemPromptFor("02-variation-strategy"),
+      system: systemPromptFor("02-variation-strategy", "platform-formats"),
       text: [
+        platformLine,
         `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
         `Produce exactly ${need} variation briefs, with ids v${startIndex}..v${startIndex + need - 1}.`,
         usedAngles.length
           ? `Marketing angles already used (do NOT repeat any of them): ${usedAngles.join(" | ")}`
           : "This is the first batch.",
         "Output only the JSON.",
-      ].join("\n\n"),
+      ].filter(Boolean).join("\n\n"),
       imageUrl,
       thinking: true,
     },
@@ -104,13 +111,14 @@ export async function planChunk(params: {
   const mode = renderMode === "overlay" ? "background-plate" : "full";
   const promptsRes = await callMiniMaxJson(
     {
-      system: systemPromptFor("03-image-prompt-authoring"),
+      system: systemPromptFor("03-image-prompt-authoring", "platform-formats"),
       text: [
         `MODE: ${mode}`,
+        platformLine,
         `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
         `Variation briefs JSON:\n${JSON.stringify({ briefs })}`,
         `Write one generation prompt per brief (${briefs.length} total), following MODE "${mode}". Output only the JSON.`,
-      ].join("\n\n"),
+      ].filter(Boolean).join("\n\n"),
       thinking: false,
       maxTokens: 24000,
     },
@@ -120,12 +128,40 @@ export async function planChunk(params: {
 
   return briefs.map((b, i) => ({
     id: b.id,
+    angleCategory: b.angleCategory,
     marketingAngle: b.marketingAngle,
     angleRationale: b.angleRationale,
     visualChanges: b.visualChanges,
     // tolerate id drift: fall back to positional matching
     prompt: byId.get(b.id) ?? promptsRes.prompts[i]?.prompt ?? "",
   }));
+}
+
+/** Score a finished creative (image data URL) against the pre-spend scorecard. */
+export async function scoreCreative(params: {
+  imageDataUrl: string;
+  analysis?: CreativeAnalysis;
+  platform?: string;
+}): Promise<CreativeScore> {
+  return callMiniMaxJson<CreativeScore>(
+    {
+      system: systemPromptFor("creative-scorecard"),
+      text: [
+        params.platform && params.platform !== "free" ? `PLATFORM: ${params.platform}` : "",
+        params.analysis
+          ? `Context (the intended texts and concept):\n${JSON.stringify({
+              product: params.analysis.product,
+              texts: params.analysis.textBlocks.map((t) => t.text),
+            })}`
+          : "",
+        "Score the attached creative. Output only the JSON.",
+      ].filter(Boolean).join("\n\n"),
+      imageUrl: params.imageDataUrl,
+      thinking: false,
+      maxTokens: 2000,
+    },
+    ScoreSchema,
+  );
 }
 
 /**
@@ -137,15 +173,21 @@ export async function designNew(params: {
   brief: string;
   productImageUrl?: string;
   aspectRatio?: string;
+  platform?: string;
 }): Promise<CreativeSpec> {
   const ratioHint = params.aspectRatio ? `Target aspect ratio: ${params.aspectRatio}.` : "";
+  const platformHint =
+    params.platform && params.platform !== "free"
+      ? `PLATFORM: ${params.platform} — apply its native look, text budgets and safe zones.`
+      : "";
   const productHint = params.productImageUrl
     ? "A product photo is attached — design the ad around this exact product as the hero."
     : "No product photo — design the product visual from scratch too.";
   return callMiniMaxJson<CreativeSpec>(
     {
-      system: systemPromptFor("ad-design", "hebrew-copywriting"),
+      system: systemPromptFor("ad-design", "hebrew-copywriting", "platform-formats"),
       text: [
+        platformHint,
         `Brief from the user:\n${params.brief}`,
         productHint,
         ratioHint,
