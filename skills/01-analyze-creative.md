@@ -48,6 +48,10 @@ especially the EXACT text and typography.
 5. **Name the current marketing angle** — the psychological hook the creative uses today
    (e.g. "discount urgency", "clinical trust", "luxury minimalism").
 6. **Branding:** brand name if visible, logo description and position if present.
+7. **Brand Kit extraction:** distill the reusable brand identity — the dominant brand
+   colors (hex, ordered by importance, not just area), and the tone of voice implied by
+   the copy and design (e.g. "צעיר ואנרגטי", "פרימיום שקט", "קליני-אמין"). Put the tone
+   in `toneOfVoice`. Downstream generations reuse this to stay on-brand.
 
 ## Output — ONLY this JSON (schema)
 
@@ -74,6 +78,7 @@ especially the EXACT text and typography.
   "category": "product category",
   "brand": { "name": "string or null", "logoDescription": "string or null", "logoBbox": { "x": 0, "y": 0, "w": 0, "h": 0 } },
   "colors": ["#RRGGBB", "#RRGGBB"],
+  "toneOfVoice": "the brand's tone in a short Hebrew phrase (e.g. 'פרימיום שקט')",
   "visualStyle": "one dense paragraph: composition, lighting, style, mood, camera",
   "marketingAngle": "the current psychological hook, one short phrase",
   "aspectRatio": "e.g. 1:1, 4:5, 9:16 — closest standard ratio"

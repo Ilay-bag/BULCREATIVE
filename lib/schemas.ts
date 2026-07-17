@@ -41,6 +41,7 @@ export const CreativeAnalysisSchema = z.object({
     .optional()
     .default({}),
   colors: z.array(z.string()).default([]),
+  toneOfVoice: z.string().optional().default(""),
   visualStyle: z.string(),
   marketingAngle: z.string(),
   aspectRatio: z.string().optional().default("1:1"),
@@ -50,8 +51,14 @@ export type CreativeAnalysis = z.infer<typeof CreativeAnalysisSchema>;
 
 /* ---------- Skill 02 output: VariationBrief[] ---------- */
 
+export const ANGLE_CATEGORIES = [
+  "pain", "outcome", "social-proof", "curiosity",
+  "comparison", "urgency", "identity", "contrarian",
+] as const;
+
 export const VariationBriefSchema = z.object({
   id: z.string(),
+  angleCategory: z.enum(ANGLE_CATEGORIES).catch("outcome"),
   marketingAngle: z.string(),
   angleRationale: z.string().optional().default(""),
   visualChanges: z.array(z.string()).min(1),
@@ -91,6 +98,23 @@ export const RewriteResponseSchema = z.object({
   blocks: z.array(z.object({ id: z.string(), text: z.string() })).min(1),
 });
 
+/* ---------- creative-scorecard skill output ---------- */
+
+export const ScoreSchema = z.object({
+  hook: z.number().min(0).max(10),
+  hierarchy: z.number().min(0).max(10),
+  cta: z.number().min(0).max(10),
+  legibility: z.number().min(0).max(10),
+  total: z.number().min(0).max(10),
+  verdict: z.string().optional().default(""),
+});
+export type CreativeScore = z.infer<typeof ScoreSchema>;
+
+/* ---------- platform presets ---------- */
+
+export const PLATFORMS = ["meta-feed", "story", "tiktok", "linkedin", "free"] as const;
+export type Platform = (typeof PLATFORMS)[number];
+
 /* ---------- chat-controller skill output: reply + one action ---------- */
 
 export const ChatActionSchema = z.object({
@@ -102,6 +126,7 @@ export const ChatActionSchema = z.object({
         "make_variations",
         "set_count",
         "set_text_mode",
+        "set_platform",
         "rewrite_copy",
         "edit_text",
         "regenerate",

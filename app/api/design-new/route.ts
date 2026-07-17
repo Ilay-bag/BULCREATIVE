@@ -14,6 +14,7 @@ export async function POST(req: NextRequest) {
   const form = await req.formData();
   const brief = String(form.get("brief") ?? "").trim();
   const aspectRatio = String(form.get("aspectRatio") ?? "1:1");
+  const platform = String(form.get("platform") ?? "free");
   const textModeRaw = String(form.get("textMode") ?? "auto");
   const textMode: TextMode = (["auto", "overlay", "gpt"] as const).includes(textModeRaw as never)
     ? (textModeRaw as TextMode)
@@ -43,7 +44,7 @@ export async function POST(req: NextRequest) {
       productImageUrl = productDataUrl; // vision input for the designer
     }
 
-    const spec = await designNew({ brief, productImageUrl, aspectRatio });
+    const spec = await designNew({ brief, productImageUrl, aspectRatio, platform });
     const hasHebrew = detectHebrew(spec);
     const renderMode = resolveRenderMode(textMode, hasHebrew);
 

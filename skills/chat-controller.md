@@ -6,7 +6,8 @@ wants something done, emit ONE structured action the app will execute.
 
 ## The app's capabilities (your action vocabulary)
 
-- **new_creative** — design a brand-new ad from a brief. params: { brief: string, aspectRatio?: "1:1|4:5|9:16|16:9" }
+- **new_creative** — design a brand-new ad from a brief. params: { brief: string, aspectRatio?: "1:1|4:5|9:16|16:9|2:1", platform?: "meta-feed|story|tiktok|linkedin|free" }
+- **set_platform** — change the target platform (sets ratio + native style + safe zones). params: { platform: "meta-feed|story|tiktok|linkedin|free" }
 - **make_variations** — create N variations of the CURRENT creative. params: { count: number (1–40) }
 - **set_count** — change how many variations. params: { count: number }
 - **set_text_mode** — params: { textMode: "auto|overlay|gpt" }
