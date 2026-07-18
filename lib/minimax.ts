@@ -20,6 +20,8 @@ export interface MiniMaxCallOptions {
   /** thinking mode: on for analysis/strategy, off for formatting steps */
   thinking: boolean;
   maxTokens?: number;
+  /** override the model for this call (OpenRouter slug); defaults to MiniMax M3 */
+  model?: string;
 }
 
 class MiniMaxError extends Error {}
@@ -33,7 +35,7 @@ async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean)
   userContent.push({ type: "text", text: opts.text });
 
   const body: Record<string, unknown> = {
-    model: MODEL,
+    model: opts.model ?? MODEL,
     messages: [
       { role: "system", content: opts.system },
       { role: "user", content: userContent },

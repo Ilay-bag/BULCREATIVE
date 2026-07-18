@@ -47,6 +47,12 @@ const PLATFORMS: { key: Platform; label: string; ratio: string }[] = [
   { key: "free", label: "חופשי", ratio: "1:1" },
 ];
 
+/** Bundled font families the overlay engine can render (must match lib/fonts.ts). */
+const FONT_OPTIONS = [
+  "Heebo", "Rubik", "Assistant", "Secular One", "Frank Ruhl Libre", "Alef",
+  "Varela Round", "Montserrat", "Inter", "Playfair Display",
+];
+
 const ANGLE_LABELS: Record<string, string> = {
   pain: "כאב", outcome: "תוצאה", "social-proof": "הוכחה חברתית", curiosity: "סקרנות",
   comparison: "השוואה", urgency: "דחיפות", identity: "זהות", contrarian: "קונטרריאני",
@@ -71,6 +77,8 @@ export default function CreativeMachine() {
   const [brief, setBrief] = useState("");
   const [productFile, setProductFile] = useState<File | null>(null);
   const [productPreview, setProductPreview] = useState<string | null>(null);
+  const [productUrl, setProductUrl] = useState("");
+  const [extraNotes, setExtraNotes] = useState("");
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [platform, setPlatform] = useState<Platform>("free");
   // shared
@@ -82,6 +90,8 @@ export default function CreativeMachine() {
   const [renderMode, setRenderMode] = useState<"gpt" | "overlay">("gpt");
   const [hasHebrew, setHasHebrew] = useState(false);
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [fontEdits, setFontEdits] = useState<Record<string, string>>({});
+  const [colorEdits, setColorEdits] = useState<Record<string, string>>({});
   const [variations, setVariations] = useState<Variation[]>([]);
   const [uiError, setUiError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -137,7 +147,9 @@ export default function CreativeMachine() {
       form.append("aspectRatio", ratio ?? aspectRatio);
       form.append("platform", platform);
       form.append("textMode", textMode);
+      if (extraNotes.trim()) form.append("extraNotes", extraNotes.trim());
       if (productFile) form.append("productImage", productFile);
+      else if (productUrl.trim()) form.append("productUrl", productUrl.trim());
       const res = await fetch("/api/design-new", { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "שגיאה בעיצוב");
@@ -177,7 +189,13 @@ export default function CreativeMachine() {
   const confirmAndGenerate = async () => {
     if (!analysis) return;
     setBusy(true); setUiError(null);
-    const blocks = analysis.textBlocks.map((b) => ({ ...b, text: edits[b.id] ?? b.text }));
+    // merge text + font + color overrides into the analysis the pipeline will use
+    const blocks = analysis.textBlocks.map((b) => ({
+      ...b,
+      text: edits[b.id] ?? b.text,
+      color: colorEdits[b.id] ?? b.color,
+      font: fontEdits[b.id] ? { ...b.font, likelyFamily: fontEdits[b.id] } : b.font,
+    }));
     const a: Analysis = { ...analysis, textBlocks: blocks };
     const heb = blocks.some((b) => HEBREW_RE.test(b.text));
     const m = textMode === "auto" ? (heb ? "overlay" : "gpt") : textMode;
@@ -402,8 +420,9 @@ export default function CreativeMachine() {
     variations.forEach((v) => v.blobUrl && URL.revokeObjectURL(v.blobUrl));
     setMode("home"); setPhase("input"); setFile(null); setPreviewUrl(null);
     setBrief(""); setProductFile(null); setProductPreview(null);
+    setProductUrl(""); setExtraNotes("");
     setAnalysis(null); setSourceUrl(undefined); setPlatePrompt(undefined);
-    setEdits({}); syncVars([]); setUiError(null);
+    setEdits({}); setFontEdits({}); setColorEdits({}); syncVars([]); setUiError(null);
   };
 
   /* ================== render ================== */
@@ -457,6 +476,26 @@ export default function CreativeMachine() {
           </button>
           <input ref={prodRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "product")} />
           {productPreview && <img src={productPreview} alt="" className="h-12 w-12 rounded-lg object-cover ring-1 ring-zinc-700" />}
+        </div>
+        {!productFile && (
+          <input
+            value={productUrl}
+            onChange={(e) => setProductUrl(e.target.value)}
+            dir="ltr"
+            placeholder="או הדבק קישור ישיר לתמונת המוצר (https://...)"
+            className="mt-3 w-full rounded-xl bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500"
+          />
+        )}
+        <div className="mt-3">
+          <label className="mb-1 block text-sm font-semibold text-zinc-400">הנחיות נוספות (אופציונלי)</label>
+          <textarea
+            value={extraNotes}
+            onChange={(e) => setExtraNotes(e.target.value)}
+            rows={2}
+            dir="rtl"
+            placeholder="למשל: לשמור על טקסטורת הבד המדויקת, רקע בהיר, בלי אנשים בפריים"
+            className="w-full rounded-xl bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500"
+          />
         </div>
         {platformSelector()}
         {sharedControls()}
@@ -557,10 +596,27 @@ export default function CreativeMachine() {
                 <div key={b.id} className="rounded-xl bg-zinc-900/70 p-3 ring-1 ring-zinc-800">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="text-xs font-bold text-zinc-400">{ROLE_LABELS[b.role] ?? b.role}</span>
-                    <span className="text-[11px] text-zinc-600">{b.font.likelyFamily}</span>
+                    <span className="flex items-center gap-2">
+                      <select
+                        value={fontEdits[b.id] ?? (FONT_OPTIONS.includes(b.font.likelyFamily) ? b.font.likelyFamily : "")}
+                        onChange={(e) => setFontEdits((p) => ({ ...p, [b.id]: e.target.value }))}
+                        className="rounded-md bg-zinc-950 px-1.5 py-0.5 text-[11px] text-zinc-300 ring-1 ring-zinc-800"
+                      >
+                        <option value="" disabled>פונט…</option>
+                        {FONT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                      <input
+                        type="color"
+                        value={colorEdits[b.id] ?? (/^#[0-9a-fA-F]{6}$/.test(b.color ?? "") ? b.color! : "#111111")}
+                        onChange={(e) => setColorEdits((p) => ({ ...p, [b.id]: e.target.value }))}
+                        title="צבע הטקסט"
+                        className="h-6 w-8 cursor-pointer rounded-md bg-zinc-950 ring-1 ring-zinc-800"
+                      />
+                    </span>
                   </div>
                   <textarea value={val} onChange={(e) => setEdits((p) => ({ ...p, [b.id]: e.target.value }))}
                     dir={isHe ? "rtl" : "ltr"} rows={val.includes("\n") ? 2 : 1}
+                    style={{ fontFamily: `"${fontEdits[b.id] ?? b.font.likelyFamily}", sans-serif`, color: colorEdits[b.id] ?? undefined }}
                     className="w-full resize-y rounded-lg bg-zinc-950 px-3 py-2 text-lg text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500" />
                 </div>
               );

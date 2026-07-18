@@ -48,6 +48,23 @@ Hebrew AI copy has recognizable fingerprints. Remove ALL of these:
 After editing, RE-READ: would a skeptical Israeli reader think "a machine wrote this"?
 If yes, keep fixing until it sounds like a person.
 
+## Calibration — what good vs. bad looks like (study these)
+
+**BAD (AI-flavored, generic, stiff):**
+- ❌ "גלה את החוויה המושלמת לעור שלך עם הקרם החדשני שלנו"
+- ❌ "איכות ללא פשרות במחיר שלא יאמן — הצטרפו עוד היום"
+- ❌ "המוצר האולטימטיבי שישנה לכם את החיים"
+
+**GOOD (specific, human, sharp):**
+- ✅ "העור שלך צמא. תני לו לשתות." (קרם לחות — ויז'ואל של רעננות)
+- ✅ "180 גרם. זה כל מה שתרגישי." (נעלי ריצה קלות)
+- ✅ "נגמר תוך 3 ימים בפעם שעברה." (הוכחה חברתית + דחיפות, בלי סימני קריאה)
+- ✅ "קפה של 6 בבוקר, בלי לקום ב-6 בבוקר." (מכונת קפה עם טיימר — כאב מדויק)
+
+The difference: a GOOD line contains one concrete image, number, or tension the reader
+can *feel*. A BAD line could describe any product on earth. Before finalizing any
+headline, ask: "could this exact sentence sell a different product?" If yes — rewrite.
+
 ## Output
 
 When asked to rewrite/scrub, return ONLY JSON:
