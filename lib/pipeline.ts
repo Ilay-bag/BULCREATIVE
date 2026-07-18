@@ -210,7 +210,7 @@ export async function designNew(params: {
  * Configurable via OPENROUTER_COPY_MODEL; falls back to MiniMax when the
  * requested model errors (wrong slug / unavailable on this key).
  */
-const COPY_MODEL = process.env.OPENROUTER_COPY_MODEL || "anthropic/claude-sonnet-4.5";
+const COPY_MODEL = process.env.OPENROUTER_COPY_MODEL || "google/gemini-3-flash-preview";
 
 /** Rewrite/scrub copy blocks: sharp marketing Hebrew with AI tells removed. */
 export async function rewriteCopy(params: {
