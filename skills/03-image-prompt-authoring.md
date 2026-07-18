@@ -27,6 +27,15 @@ Your job: write ONE generation prompt per brief.
    "Change ONLY [the background/scene/props/lighting] — keep everything else the same:
    same product, same geometry, same layout logic." Repeat the critical preservation
    constraints explicitly in EVERY prompt (constraints don't carry over on their own).
+5b. **PRODUCT FIDELITY IS NON-NEGOTIABLE.** When a product appears in the reference
+   image(s), the reference is ground truth for the product itself. Every prompt must
+   include a product-fidelity block naming the specific physical properties to preserve:
+   "Preserve the product EXACTLY as in the reference: identical fabric texture and weave,
+   material sheen, stitching, color shade, proportions, logos/labels. Do not restyle,
+   smooth, simplify, or re-render the product — only the scene around it changes."
+   For apparel: name the textile explicitly (e.g. "ribbed cotton knit", "brushed fleece",
+   "denim twill") based on what the analysis observed. A beautiful scene with the wrong
+   fabric is a failed generation.
 6. **Exclusions are stated, not assumed:** "no watermark, no extra text, no invented logos."
 7. **Don't overload.** 120–220 words. Every sentence earns its place.
 

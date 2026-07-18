@@ -174,8 +174,12 @@ export async function designNew(params: {
   productImageUrl?: string;
   aspectRatio?: string;
   platform?: string;
+  extraNotes?: string;
 }): Promise<CreativeSpec> {
   const ratioHint = params.aspectRatio ? `Target aspect ratio: ${params.aspectRatio}.` : "";
+  const notesHint = params.extraNotes?.trim()
+    ? `Additional art-direction notes from the user (follow them):\n${params.extraNotes.trim()}`
+    : "";
   const platformHint =
     params.platform && params.platform !== "free"
       ? `PLATFORM: ${params.platform} — apply its native look, text budgets and safe zones.`
@@ -190,6 +194,7 @@ export async function designNew(params: {
         platformHint,
         `Brief from the user:\n${params.brief}`,
         productHint,
+        notesHint,
         ratioHint,
         "Design the complete creative. Output only the JSON.",
       ].filter(Boolean).join("\n\n"),
@@ -200,24 +205,42 @@ export async function designNew(params: {
   );
 }
 
+/**
+ * The copywriting model: a stronger writer than the pipeline's default brain.
+ * Configurable via OPENROUTER_COPY_MODEL; falls back to MiniMax when the
+ * requested model errors (wrong slug / unavailable on this key).
+ */
+const COPY_MODEL = process.env.OPENROUTER_COPY_MODEL || "anthropic/claude-sonnet-4.5";
+
 /** Rewrite/scrub copy blocks: sharp marketing Hebrew with AI tells removed. */
 export async function rewriteCopy(params: {
   blocks: { id: string; role: string; text: string }[];
   instruction?: string;
+  productContext?: string;
 }): Promise<Record<string, string>> {
-  const res = await callMiniMaxJson(
-    {
-      system: systemPromptFor("hebrew-copywriting"),
-      text: [
-        `Text blocks (keep ids):\n${JSON.stringify({ blocks: params.blocks })}`,
-        params.instruction ? `User instruction: ${params.instruction}` : "",
-        "Rewrite each block to be natural, human, sharp marketing copy with all AI tells removed. Output only the JSON.",
-      ].filter(Boolean).join("\n\n"),
-      thinking: false,
-      maxTokens: 8000,
-    },
-    RewriteResponseSchema,
-  );
+  const call = (model?: string) =>
+    callMiniMaxJson(
+      {
+        system: systemPromptFor("hebrew-copywriting"),
+        text: [
+          params.productContext ? `Product context: ${params.productContext}` : "",
+          `Text blocks (keep ids):\n${JSON.stringify({ blocks: params.blocks })}`,
+          params.instruction ? `User instruction: ${params.instruction}` : "",
+          "Rewrite each block to be natural, human, sharp marketing copy with all AI tells removed. Output only the JSON.",
+        ].filter(Boolean).join("\n\n"),
+        thinking: false,
+        maxTokens: 8000,
+        model,
+      },
+      RewriteResponseSchema,
+    );
+
+  let res;
+  try {
+    res = await call(COPY_MODEL);
+  } catch {
+    res = await call(); // fall back to the default pipeline model
+  }
   const map: Record<string, string> = {};
   for (const b of res.blocks) map[b.id] = b.text;
   return map;

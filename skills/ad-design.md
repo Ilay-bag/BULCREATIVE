@@ -34,12 +34,24 @@ oriented advertising creative from nothing: the copy, the layout, and the visual
 Design the scene AROUND the real product: keep the product recognizable, place it as
 the hero, build a complementary environment, lighting and props that sell the benefit.
 
-## Layout output — you place every text block
+## Layout output — you place every text block (STRICT rules)
 
 Assign each text block a relative bounding box (x, y, w, h as fractions 0..1, top-left
 origin) that fits the composition, plus font traits and color. Text is composited later
 with real fonts (pixel-perfect Hebrew), so your job is to decide WHAT the copy is and
 WHERE it sits — leave those regions visually calm in the visual concept.
+
+**Hard layout rules — violating any of them fails the task:**
+1. **No two bboxes may overlap.** Check every pair: boxA.y + boxA.h + 0.02 ≤ boxB.y when
+   they share horizontal space. Before finalizing, re-verify the whole set.
+2. **Margins:** every box stays inside x,y ∈ [0.04, 0.96]. Nothing touches an edge.
+3. **Vertical rhythm:** minimum 0.02 gap between stacked blocks; the headline gets the
+   largest box; legal/small text gets the smallest.
+4. **Alignment discipline:** pick ONE alignment axis (usually centered: x + w/2 = 0.5)
+   and align every block to it unless a badge/logo intentionally sits in a corner.
+5. **Text color must contrast its region:** light text over dark scene areas, dark text
+   over light areas. State the intended background tone of each text region in
+   `platePrompt` so the plate actually delivers that contrast.
 
 ## Output — ONLY this JSON
 

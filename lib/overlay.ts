@@ -76,10 +76,91 @@ function fitFontSize(
   return 8;
 }
 
+/* ---------- layout sanitation ---------- */
+
+interface RelBox { x: number; y: number; w: number; h: number }
+
+const MARGIN = 0.03; // min distance from any edge
+const GAP = 0.015; // min vertical gap between blocks
+
+/**
+ * Model-produced bboxes can drift: off-canvas, touching edges, or overlapping.
+ * Clamp everything into the safe frame and resolve vertical overlaps between
+ * horizontally-intersecting blocks by stacking them downward.
+ */
+function sanitizeLayout(boxes: RelBox[]): RelBox[] {
+  const out = boxes.map((b) => {
+    const w = Math.min(Math.max(b.w, 0.05), 1 - 2 * MARGIN);
+    const h = Math.min(Math.max(b.h, 0.02), 1 - 2 * MARGIN);
+    return {
+      w, h,
+      x: Math.min(Math.max(b.x, MARGIN), 1 - MARGIN - w),
+      y: Math.min(Math.max(b.y, MARGIN), 1 - MARGIN - h),
+    };
+  });
+
+  // resolve overlaps in reading order (top to bottom)
+  const order = out.map((_, i) => i).sort((a, z) => out[a].y - out[z].y);
+  for (let i = 1; i < order.length; i++) {
+    const cur = out[order[i]];
+    for (let j = 0; j < i; j++) {
+      const prev = out[order[j]];
+      const hOverlap = cur.x < prev.x + prev.w && prev.x < cur.x + cur.w;
+      const vOverlap = cur.y < prev.y + prev.h + GAP;
+      if (hOverlap && vOverlap && cur.y + cur.h > prev.y) {
+        cur.y = Math.min(prev.y + prev.h + GAP, 1 - MARGIN - cur.h);
+      }
+    }
+  }
+  return out;
+}
+
+/* ---------- contrast guard ---------- */
+
+function hexToRgb(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return [0, 0, 0];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function relLuminance([r, g, b]: [number, number, number]): number {
+  const f = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+function contrastRatio(l1: number, l2: number): number {
+  const [a, b] = l1 > l2 ? [l1, l2] : [l2, l1];
+  return (a + 0.05) / (b + 0.05);
+}
+
+/** Average luminance of the plate region behind a block. */
+function regionLuminance(ctx: SKRSContext2D, x: number, y: number, w: number, h: number): number {
+  const px = Math.max(0, Math.floor(x));
+  const py = Math.max(0, Math.floor(y));
+  const pw = Math.max(1, Math.floor(w));
+  const ph = Math.max(1, Math.floor(h));
+  const data = ctx.getImageData(px, py, pw, ph).data;
+  let sum = 0;
+  const step = Math.max(4, Math.floor(data.length / 4 / 400) * 4); // sample ≤ ~400 px
+  let n = 0;
+  for (let i = 0; i + 2 < data.length; i += step) {
+    sum += relLuminance([data[i], data[i + 1], data[i + 2]]);
+    n++;
+  }
+  return n ? sum / n : 0.5;
+}
+
 /**
  * Composite text blocks (from the creative analysis) onto a background plate.
  * bboxes are relative (0..1) to the ORIGINAL creative; the plate keeps the same
- * layout logic, so relative positioning transfers.
+ * layout logic, so relative positioning transfers. Layout is sanitized
+ * (no overlaps, safe margins) and every block gets a contrast guard: if the
+ * chosen color reads poorly against the actual plate pixels behind it, the
+ * color flips to white/black and a soft shadow is added for legibility.
  */
 export async function overlayTexts(
   plate: Buffer,
@@ -93,7 +174,9 @@ export async function overlayTexts(
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0, W, H);
 
-  const blocks: PlacedBlock[] = analysis.textBlocks.map((t) => {
+  const rels = sanitizeLayout(analysis.textBlocks.map((t) => t.bbox));
+
+  const blocks: PlacedBlock[] = analysis.textBlocks.map((t, i) => {
     const isHebrew = HEBREW_RE.test(t.text);
     const font = resolveFont({
       isHebrew,
@@ -101,12 +184,13 @@ export async function overlayTexts(
       weight: t.font.weight,
       likelyFamily: t.font.likelyFamily,
     });
+    const r = rels[i];
     return {
       lines: t.text.split("\n").map((l) => l.trim()).filter(Boolean),
-      x: (t.bbox.x + t.bbox.w / 2) * W,
-      y: t.bbox.y * H,
-      w: t.bbox.w * W,
-      h: t.bbox.h * H,
+      x: (r.x + r.w / 2) * W,
+      y: r.y * H,
+      w: r.w * W,
+      h: r.h * H,
       fontFamily: font.family,
       fontWeight: font.weight,
       color: t.color || "#000000",
@@ -127,7 +211,26 @@ export async function overlayTexts(
     const sp = (LETTER_SPACING_PX[b.letterSpacing] ?? LETTER_SPACING_PX.normal)(size);
     ctx.letterSpacing = `${sp}px`;
     ctx.font = `${b.fontWeight} ${size}px "${b.fontFamily}"`;
-    ctx.fillStyle = b.color;
+
+    // contrast guard against the real pixels behind this block
+    const bg = regionLuminance(ctx, b.x - b.w / 2, b.y, b.w, b.h);
+    let color = b.color;
+    let ratio = contrastRatio(relLuminance(hexToRgb(color)), bg);
+    if (ratio < 3) {
+      color = bg > 0.45 ? "#111111" : "#FFFFFF";
+      ratio = contrastRatio(relLuminance(hexToRgb(color)), bg);
+    }
+    ctx.fillStyle = color;
+    if (ratio < 6) {
+      // busy or mid-tone background — soft shadow separates the letters
+      ctx.shadowColor = relLuminance(hexToRgb(color)) > 0.5 ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.55)";
+      ctx.shadowBlur = Math.max(4, size * 0.08);
+      ctx.shadowOffsetY = Math.max(1, size * 0.02);
+    } else {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+    }
 
     const lineHeight = size * 1.15;
     const totalH = lineHeight * b.lines.length;
@@ -135,6 +238,9 @@ export async function overlayTexts(
     b.lines.forEach((line, i) => {
       ctx.fillText(line, b.x, startY + i * lineHeight);
     });
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
   }
 
   return canvas.encode("png");
