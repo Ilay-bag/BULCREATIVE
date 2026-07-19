@@ -1,18 +1,32 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
+import {
+  IconAlert, IconArchive, IconArrowRight, IconChart, IconChat, IconCheck,
+  IconChevronDown, IconChevronLeft, IconChevronRight, IconCompare, IconDownload,
+  IconEye, IconImage, IconLayers, IconLightbulb, IconMaximize, IconMove,
+  IconPalette, IconPencil, IconPlus, IconRefresh, IconResize, IconSend,
+  IconSparkle, IconTag, IconTarget, IconUndo, IconUpload, IconWand, IconX,
+} from "./icons";
 
 /* ---------- types ---------- */
 interface TextBlock {
   id: string; text: string; role: string; language?: string;
-  font: { likelyFamily: string }; color?: string;
+  font: { likelyFamily: string; weight?: string; category?: string };
+  color?: string;
   bbox: { x: number; y: number; w: number; h: number };
 }
+interface BBox { x: number; y: number; w: number; h: number }
+interface MarketingIdea { title: string; idea: string }
+interface SellingPoint { point: string; why?: string }
 interface Analysis {
   textBlocks: TextBlock[]; product: string; category: string;
   marketingAngle: string; aspectRatio?: string; colors?: string[];
   toneOfVoice?: string;
+  offerType?: string;
+  marketingIdeas?: MarketingIdea[];
+  sellingPoints?: SellingPoint[];
   brand?: { name?: string | null; logoDescription?: string | null; logoBbox?: { x: number; y: number; w: number; h: number } | null };
   [k: string]: unknown;
 }
@@ -54,10 +68,26 @@ const FONT_OPTIONS = [
   "Heebo", "Rubik", "Assistant", "Secular One", "Frank Ruhl Libre", "Alef",
   "Varela Round", "Montserrat", "Inter", "Playfair Display",
 ];
+/** Families with Hebrew glyph coverage — shown first (and badged) for Hebrew blocks. */
+const HEBREW_FONTS = new Set([
+  "Heebo", "Rubik", "Assistant", "Secular One", "Frank Ruhl Libre", "Alef", "Varela Round",
+]);
+/** analysis weight name → CSS font-weight for the live preview. */
+const WEIGHT_CSS: Record<string, number> = { light: 400, regular: 400, medium: 700, bold: 700, black: 900 };
+const WEIGHT_CHOICES: { key: string; label: string; css: number }[] = [
+  { key: "regular", label: "רגיל", css: 400 },
+  { key: "bold", label: "מודגש", css: 700 },
+  { key: "black", label: "שחור", css: 900 },
+];
 
 const ANGLE_LABELS: Record<string, string> = {
   pain: "כאב", outcome: "תוצאה", "social-proof": "הוכחה חברתית", curiosity: "סקרנות",
   comparison: "השוואה", urgency: "דחיפות", identity: "זהות", contrarian: "קונטרריאני",
+};
+
+const OFFER_LABELS: Record<string, string> = {
+  product: "מוצר בודד", collection: "קולקציה", "flash-sale": "פלאש סייל",
+  sale: "מבצע", launch: "השקה", brand: "מותג",
 };
 
 const blobToDataUrl = (blob: Blob): Promise<string> =>
@@ -99,12 +129,27 @@ export default function CreativeMachine() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [fontEdits, setFontEdits] = useState<Record<string, string>>({});
   const [colorEdits, setColorEdits] = useState<Record<string, string>>({});
+  const [weightEdits, setWeightEdits] = useState<Record<string, string>>({});
+  // marketing-consultant picks: which suggested ideas / selling points steer the plan
+  const [pickedIdeas, setPickedIdeas] = useState<Record<string, boolean>>({});
+  const [pickedPoints, setPickedPoints] = useState<Record<string, boolean>>({});
+  // studio UX
+  const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
+  const [showLivePreview, setShowLivePreview] = useState(true);
+  const [bboxEdits, setBboxEdits] = useState<Record<string, BBox>>({});
+  // gallery UX
+  const [lightboxId, setLightboxId] = useState<string | null>(null);
+  const [galleryFilter, setGalleryFilter] = useState<"all" | "done" | "weak" | "failed">("all");
+  const [compareOn, setCompareOn] = useState(false);
   const [variations, setVariations] = useState<Variation[]>([]);
   const [uiError, setUiError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [zipping, setZipping] = useState(false);
   const [improving, setImproving] = useState(false);
   const varsRef = useRef<Variation[]>([]);
+  const blockCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ id: string; mode: "move" | "resize"; sx: number; sy: number; start: BBox } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const prodRef = useRef<HTMLInputElement>(null);
   const logoRef = useRef<HTMLInputElement>(null);
@@ -118,6 +163,22 @@ export default function CreativeMachine() {
 
   const syncVars = (v: Variation[]) => { varsRef.current = v; setVariations([...v]); };
   const doneCount = variations.filter((v) => v.status === "done").length;
+
+  // lightbox keyboard: Esc closes, arrows navigate between openable variations
+  useEffect(() => {
+    if (!lightboxId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setLightboxId(null); return; }
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const openable = varsRef.current.filter((v) => v.blobUrl);
+      const idx = openable.findIndex((v) => v.id === lightboxId);
+      if (idx < 0 || openable.length < 2) return;
+      const d = e.key === "ArrowRight" ? 1 : -1; // RTL: right = previous visually, keep simple cycle
+      setLightboxId(openable[(idx + d + openable.length) % openable.length].id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxId]);
 
   /* ---------- file inputs ---------- */
   const acceptImage = useCallback((f: File | undefined | null, kind: "creative" | "product" | "logo") => {
@@ -174,6 +235,8 @@ export default function CreativeMachine() {
     setRenderMode(data.renderMode);
     setHasHebrew(data.hasHebrew);
     setEdits(Object.fromEntries(data.analysis.textBlocks.map((b: TextBlock) => [b.id, b.text])));
+    setPickedIdeas({}); setPickedPoints({});
+    setSelectedBlock(null); setShowLivePreview(true); setBboxEdits({});
     setPhase("review");
   };
   const fail = (e: unknown) => { setUiError(e instanceof Error ? e.message : String(e)); setPhase("failed"); };
@@ -204,7 +267,12 @@ export default function CreativeMachine() {
       ...b,
       text: edits[b.id] ?? b.text,
       color: colorEdits[b.id] ?? b.color,
-      font: fontEdits[b.id] ? { ...b.font, likelyFamily: fontEdits[b.id] } : b.font,
+      bbox: bboxEdits[b.id] ?? b.bbox,
+      font: {
+        ...b.font,
+        ...(fontEdits[b.id] ? { likelyFamily: fontEdits[b.id] } : {}),
+        ...(weightEdits[b.id] ? { weight: weightEdits[b.id] } : {}),
+      },
     }));
     const a: Analysis = { ...analysis, textBlocks: blocks };
     const heb = blocks.some((b) => HEBREW_RE.test(b.text));
@@ -232,7 +300,13 @@ export default function CreativeMachine() {
       const need = Math.min(PLAN_CHUNK, count - all.length);
       const res = await fetch("/api/plan", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need, startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle), platform, hasLogo: !!logoDataUrl }),
+        body: JSON.stringify({
+          analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need,
+          startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle),
+          platform, hasLogo: !!logoDataUrl,
+          selectedIdeas: (a.marketingIdeas ?? []).filter((i) => pickedIdeas[i.title]).map((i) => `${i.title} — ${i.idea}`),
+          selectedSellingPoints: (a.sellingPoints ?? []).filter((s) => pickedPoints[s.point]).map((s) => s.point),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "שגיאה בתכנון");
@@ -440,7 +514,10 @@ export default function CreativeMachine() {
     setBrief(""); setProductFile(null); setProductPreview(null);
     setProductUrl(""); setExtraNotes(""); setLogoDataUrl(null);
     setAnalysis(null); setSourceUrl(undefined); setPlatePrompt(undefined);
-    setEdits({}); setFontEdits({}); setColorEdits({}); syncVars([]); setUiError(null);
+    setEdits({}); setFontEdits({}); setColorEdits({}); setWeightEdits({}); setBboxEdits({});
+    setPickedIdeas({}); setPickedPoints({});
+    setSelectedBlock(null); setLightboxId(null); setGalleryFilter("all"); setCompareOn(false);
+    syncVars([]); setUiError(null);
   };
 
   /* ================== render ================== */
@@ -451,11 +528,20 @@ export default function CreativeMachine() {
     </div>
   );
 
+  function currentStep(): number {
+    if (mode === "home") return 0;
+    if (phase === "input" || phase === "busy") return 1;
+    if (phase === "review") return 2;
+    if (phase === "generating") return 3;
+    return 4; // done / failed → gallery
+  }
+
   function renderWorkspace() {
+    const stepper = mode !== "home" && <Stepper current={currentStep()} />;
     if (mode === "home") return <Home onVariations={() => setMode("variations")} onNew={() => setMode("new")} />;
-    if (phase === "review" && analysis) return renderReview();
-    if (phase === "generating" || phase === "done" || phase === "failed") return renderGallery();
-    return mode === "variations" ? renderVariationsInput() : renderNewInput();
+    if (phase === "review" && analysis) return <>{stepper}{renderReview()}</>;
+    if (phase === "generating" || phase === "done" || phase === "failed") return <>{stepper}{renderGallery()}</>;
+    return <>{stepper}{mode === "variations" ? renderVariationsInput() : renderNewInput()}</>;
   }
 
   /* ----- variations input ----- */
@@ -466,15 +552,23 @@ export default function CreativeMachine() {
         <div onClick={() => fileRef.current?.click()}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => { e.preventDefault(); acceptImage(e.dataTransfer.files?.[0], "creative"); }}
-          className="cursor-pointer rounded-2xl border-2 border-dashed border-zinc-700 bg-zinc-900/60 p-10 text-center hover:border-zinc-500">
+          className="cursor-pointer rounded-2xl border border-dashed border-[color:var(--border-strong)] bg-[color:var(--surface)] p-10 text-center transition hover:border-[color:var(--accent)] hover:bg-[color:var(--surface-2)]">
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "creative")} />
           {previewUrl ? <img src={previewUrl} alt="" className="mx-auto max-h-72 rounded-lg" />
-            : <><div className="text-5xl">🎨</div><p className="mt-4 text-lg font-semibold">גרור קריאייטיב או לחץ לבחירה</p><p className="mt-1 text-sm text-zinc-500">PNG / JPEG / WebP · עד 9MB</p></>}
+            : (
+              <>
+                <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]"><IconUpload size={22} /></span>
+                <p className="mt-4 font-semibold text-[color:var(--text)]">גרור קריאייטיב או לחץ לבחירה</p>
+                <p className="mt-1 text-xs text-[color:var(--text-3)]">PNG / JPEG / WebP · עד 9MB</p>
+              </>
+            )}
         </div>
         {platformSelector()}
         {sharedControls()}
         {uiError && <ErrBox msg={uiError} />}
-        <button onClick={startVariations} disabled={!file || busy} className={btnPrimary}>{busy ? "סורק..." : "🚀 סרוק והתחל"}</button>
+        <button onClick={startVariations} disabled={!file || busy} className={btnPrimary}>
+          {busy ? "סורק…" : <><IconSparkle size={17} /> סרוק והתחל</>}
+        </button>
       </div>
     );
   }
@@ -484,16 +578,16 @@ export default function CreativeMachine() {
     return (
       <div className="mx-auto max-w-2xl">
         <BackBar onBack={reset} title="יצירת קריאייטיב חדש" />
-        <label className="mb-2 block font-semibold">תאר את המוצר / המבצע</label>
+        <label className="mb-2 block text-sm font-semibold text-[color:var(--text-2)]">תאר את המוצר / המבצע</label>
         <textarea value={brief} onChange={(e) => setBrief(e.target.value)} rows={4} dir="rtl"
           placeholder="לדוגמה: קרם לחות טבעי עם אלוורה למותג 'נטורל', מבצע 30% הנחה, טון רענן ונקי"
-          className="w-full rounded-xl bg-zinc-950 p-3 text-lg text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500" />
+          className="field w-full p-3 text-base" />
         <div className="mt-4 flex items-center gap-3">
-          <button onClick={() => prodRef.current?.click()} className="rounded-xl bg-zinc-800 px-4 py-2 text-sm font-bold hover:bg-zinc-700">
-            {productPreview ? "החלף תמונת מוצר" : "➕ תמונת מוצר (אופציונלי)"}
+          <button onClick={() => prodRef.current?.click()} className="btn btn-secondary h-9 px-4 text-sm">
+            <IconImage size={15} /> {productPreview ? "החלף תמונת מוצר" : "תמונת מוצר (אופציונלי)"}
           </button>
           <input ref={prodRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "product")} />
-          {productPreview && <img src={productPreview} alt="" className="h-12 w-12 rounded-lg object-cover ring-1 ring-zinc-700" />}
+          {productPreview && <img src={productPreview} alt="" className="h-12 w-12 rounded-lg border border-[color:var(--border)] object-cover" />}
         </div>
         {!productFile && (
           <input
@@ -501,45 +595,47 @@ export default function CreativeMachine() {
             onChange={(e) => setProductUrl(e.target.value)}
             dir="ltr"
             placeholder="או הדבק קישור ישיר לתמונת המוצר (https://...)"
-            className="mt-3 w-full rounded-xl bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500"
+            className="field mt-3 w-full px-3 py-2 text-sm"
           />
         )}
         <div className="mt-3">
-          <label className="mb-1 block text-sm font-semibold text-zinc-400">הנחיות נוספות (אופציונלי)</label>
+          <label className="mb-1 block text-sm font-semibold text-[color:var(--text-2)]">הנחיות נוספות (אופציונלי)</label>
           <textarea
             value={extraNotes}
             onChange={(e) => setExtraNotes(e.target.value)}
             rows={2}
             dir="rtl"
             placeholder="למשל: לשמור על טקסטורת הבד המדויקת, רקע בהיר, בלי אנשים בפריים"
-            className="w-full rounded-xl bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500"
+            className="field w-full px-3 py-2 text-sm"
           />
         </div>
         {platformSelector()}
         {sharedControls()}
         {uiError && <ErrBox msg={uiError} />}
-        <button onClick={() => startNew()} disabled={busy || brief.trim().length < 3} className={btnPrimary}>{busy ? "מעצב..." : "✨ עצב מודעה"}</button>
+        <button onClick={() => startNew()} disabled={busy || brief.trim().length < 3} className={btnPrimary}>
+          {busy ? "מעצב…" : <><IconWand size={17} /> עצב מודעה</>}
+        </button>
       </div>
     );
   }
 
   function platformSelector() {
     return (
-      <div className="mt-4">
-        <label className="mb-2 block text-sm font-semibold text-zinc-400">פלטפורמת יעד</label>
+      <div className="mt-5">
+        <label className="mb-2 block text-sm font-semibold text-[color:var(--text-2)]">פלטפורמת יעד</label>
         <div className="flex flex-wrap gap-2">
           {PLATFORMS.map((p) => (
             <button
               key={p.key}
               onClick={() => { setPlatform(p.key); setAspectRatio(p.ratio); }}
-              className={`flex-1 whitespace-nowrap rounded-xl px-3 py-2 text-sm font-bold ${platform === p.key ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}
+              className={`chip flex-1 justify-center whitespace-nowrap px-3 py-2 text-sm ${platform === p.key ? "chip-on" : ""}`}
             >
-              {p.label} <span className="text-[10px] opacity-70">{p.ratio}</span>
+              {p.label} <span className="text-[10px] opacity-60" dir="ltr">{p.ratio}</span>
             </button>
           ))}
         </div>
         {(platform === "story" || platform === "tiktok") && (
-          <p className="mt-2 text-xs text-zinc-500">אזורים בטוחים נאכפים אוטומטית: 15% עליונים ו-20% תחתונים נשארים נקיים.</p>
+          <p className="mt-2 text-xs text-[color:var(--text-3)]">אזורים בטוחים נאכפים אוטומטית: 15% עליונים ו-20% תחתונים נשארים נקיים.</p>
         )}
       </div>
     );
@@ -547,130 +643,387 @@ export default function CreativeMachine() {
 
   function sharedControls() {
     return (
-      <div className="mt-6 rounded-2xl bg-zinc-900/60 p-5">
+      <div className="surface mt-6 rounded-2xl p-5">
         <div className="flex items-center justify-between">
-          <label className="font-semibold">כמות וריאציות</label>
-          <span className="rounded-lg bg-fuchsia-500/20 px-3 py-1 text-xl font-black text-fuchsia-300">{count}</span>
+          <label className="text-sm font-semibold text-[color:var(--text-2)]">כמות וריאציות</label>
+          <span className="rounded-lg bg-[color:var(--surface-3)] px-3 py-0.5 text-lg font-black text-[color:var(--accent)]" dir="ltr">{count}</span>
         </div>
-        <input type="range" min={1} max={40} value={count} onChange={(e) => setCount(Number(e.target.value))} className="mt-3 w-full accent-fuchsia-500" />
-        <div className="mt-4 flex gap-2">
+        <input type="range" min={1} max={40} value={count} onChange={(e) => setCount(Number(e.target.value))} className="slider mt-4 w-full" />
+        <div className="mt-5 flex gap-2">
           {([["auto", "אוטומטי"], ["overlay", "טקסט מדויק"], ["gpt", "גנרטיבי"]] as const).map(([v, l]) => (
-            <button key={v} onClick={() => setTextMode(v)} className={`flex-1 rounded-xl px-3 py-2 text-xs font-bold ${textMode === v ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>{l}</button>
+            <button key={v} onClick={() => setTextMode(v)} className={`chip flex-1 justify-center px-3 py-1.5 text-xs ${textMode === v ? "chip-on" : ""}`}>{l}</button>
           ))}
         </div>
-        <div className="mt-4 border-t border-zinc-800 pt-4">
+        <div className="mt-5 border-t border-[color:var(--border)] pt-4">
           <div className="flex items-center gap-3">
-            <button onClick={() => logoRef.current?.click()} className="rounded-xl bg-zinc-800 px-4 py-2 text-sm font-bold hover:bg-zinc-700">
-              {logoDataUrl ? "החלף לוגו" : "🏷️ העלה לוגו (אופציונלי)"}
+            <button onClick={() => logoRef.current?.click()} className="btn btn-secondary h-9 px-4 text-sm">
+              <IconTag size={14} /> {logoDataUrl ? "החלף לוגו" : "העלה לוגו (אופציונלי)"}
             </button>
             <input ref={logoRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "logo")} />
             {logoDataUrl && (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={logoDataUrl} alt="לוגו" className="h-10 w-10 rounded-lg bg-white object-contain p-1 ring-1 ring-zinc-700" />
-                <button onClick={() => setLogoDataUrl(null)} className="text-xs text-zinc-500 hover:text-red-400">הסר</button>
+                <img src={logoDataUrl} alt="לוגו" className="h-10 w-10 rounded-lg border border-[color:var(--border)] bg-white object-contain p-1" />
+                <button onClick={() => setLogoDataUrl(null)} className="text-xs text-[color:var(--text-3)] transition hover:text-[color:var(--danger)]">הסר</button>
               </>
             )}
           </div>
-          {logoDataUrl && <p className="mt-2 text-xs text-zinc-500">הלוגו יוטבע פיקסל-פרפקט על כל וריאציה — לא מצויר ע"י ה-AI.</p>}
+          {logoDataUrl && <p className="mt-2 text-xs text-[color:var(--text-3)]">הלוגו יוטבע פיקסל-פרפקט על כל וריאציה — לא מצויר על ידי המודל.</p>}
         </div>
       </div>
     );
   }
 
-  /* ----- review ----- */
-  function renderReview() {
+  /* ----- studio (review) ----- */
+
+  /** "4:5" → CSS aspect-ratio value; falls back to square. */
+  function ratioToCss(r?: string): string {
+    const m = /^(\d+):(\d+)$/.exec((r ?? "").trim());
+    return m ? `${m[1]} / ${m[2]}` : "1 / 1";
+  }
+
+  /** The font family a block currently renders with (edit override → analysis). */
+  function blockFamily(b: TextBlock): string {
+    return fontEdits[b.id] ?? (FONT_OPTIONS.includes(b.font.likelyFamily) ? b.font.likelyFamily : "Heebo");
+  }
+  function blockWeight(b: TextBlock): number {
+    const w = weightEdits[b.id] ?? b.font.weight ?? "regular";
+    return WEIGHT_CSS[w] ?? 400;
+  }
+  function blockColor(b: TextBlock): string {
+    return colorEdits[b.id] ?? (/^#[0-9a-fA-F]{6}$/.test(b.color ?? "") ? b.color! : "#111111");
+  }
+
+  /** The bbox a block currently renders at (drag/resize override → analysis). */
+  function blockBbox(b: TextBlock): BBox {
+    return bboxEdits[b.id] ?? b.bbox;
+  }
+
+  const startBlockDrag = (e: React.PointerEvent, b: TextBlock, dragMode: "move" | "resize") => {
+    e.preventDefault(); e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { id: b.id, mode: dragMode, sx: e.clientX, sy: e.clientY, start: blockBbox(b) };
+    setSelectedBlock(b.id);
+  };
+  const moveBlockDrag = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!d || !rect) return;
+    const dx = (e.clientX - d.sx) / rect.width;
+    const dy = (e.clientY - d.sy) / rect.height;
+    const s = d.start;
+    const next: BBox = d.mode === "move"
+      ? {
+          w: s.w, h: s.h,
+          x: Math.min(Math.max(s.x + dx, 0.02), 0.98 - s.w),
+          y: Math.min(Math.max(s.y + dy, 0.02), 0.98 - s.h),
+        }
+      : {
+          x: s.x, y: s.y,
+          w: Math.min(Math.max(s.w + dx, 0.06), 0.98 - s.x),
+          h: Math.min(Math.max(s.h + dy, 0.025), 0.98 - s.y),
+        };
+    setBboxEdits((p) => ({ ...p, [d.id]: next }));
+  };
+  const endBlockDrag = () => { dragRef.current = null; };
+
+  function renderStudioCanvas() {
+    const a = analysis!;
+    const bgImage = mode === "new" ? productPreview : previewUrl;
+    const palette = a.colors ?? [];
+    const gradient = `linear-gradient(135deg, ${palette[0] ?? "#27272a"} 0%, ${palette[1] ?? palette[0] ?? "#18181b"} 100%)`;
+    const layoutDirty = Object.keys(bboxEdits).length > 0;
     return (
-      <div className="mx-auto max-w-3xl">
-        <div className="mb-5 text-center">
-          <span className="rounded-full bg-fuchsia-500/20 px-4 py-1.5 text-sm font-bold text-fuchsia-300">אישור טקסט</span>
-          <h2 className="mt-3 text-2xl font-black text-zinc-100">בדוק ושכלל את הטקסט</h2>
-          <p className="mt-1 text-sm text-zinc-400">הטקסט הזה יוטבע מדויק בכל {count} הווריאציות.{hasHebrew && " שים לב לאותיות דומות (ר/ד, ך/ן)."}</p>
-          {logoDataUrl && (
-            <p className="mt-2 inline-flex items-center gap-2 rounded-full bg-zinc-800 px-3 py-1 text-xs font-bold text-zinc-300">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={logoDataUrl} alt="" className="h-4 w-4 rounded bg-white object-contain" />
-              🏷️ הלוגו יוטבע במדויק על כל וריאציה
-            </p>
+      <div className="lg:sticky lg:top-4 lg:self-start">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-bold text-[color:var(--text)]">
+            <IconEye size={14} className="text-[color:var(--accent)]" /> תצוגה חיה
+          </span>
+          <span className="flex items-center gap-2">
+            {layoutDirty && (
+              <button onClick={() => setBboxEdits({})} className="chip px-3 py-1 text-[11px] text-[color:var(--warn)]">
+                <IconUndo size={11} /> אפס פריסה
+              </button>
+            )}
+            {previewUrl && (
+              <button onClick={() => setShowLivePreview(!showLivePreview)} className="chip px-3 py-1 text-[11px]">
+                {showLivePreview ? <><IconImage size={11} /> הצג מקור</> : <><IconPencil size={11} /> עריכה חיה</>}
+              </button>
+            )}
+          </span>
+        </div>
+        <div
+          ref={canvasRef}
+          className="studio-canvas w-full rounded-xl border border-[color:var(--border)]"
+          style={{
+            aspectRatio: ratioToCss(a.aspectRatio),
+            background: bgImage ? undefined : gradient,
+            backgroundImage: bgImage ? `url(${bgImage})` : undefined,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+          }}
+        >
+          {showLivePreview && a.textBlocks.map((b) => {
+            const val = edits[b.id] ?? b.text;
+            const lines = Math.max(val.split("\n").filter(Boolean).length, 1);
+            const isHe = HEBREW_RE.test(val);
+            const box = blockBbox(b);
+            const sizeCqh = Math.max((box.h * 100 / lines) * 0.72, 1.6);
+            const active = selectedBlock === b.id;
+            return (
+              <div key={b.id}
+                onClick={() => selectBlock(b.id)}
+                className={`studio-block ${active ? "selected" : ""}`}
+                title={ROLE_LABELS[b.role] ?? b.role}
+                style={{
+                  left: `${box.x * 100}%`,
+                  top: `${box.y * 100}%`,
+                  width: `${box.w * 100}%`,
+                  height: `${box.h * 100}%`,
+                  fontFamily: `"${blockFamily(b)}", sans-serif`,
+                  fontWeight: blockWeight(b),
+                  color: blockColor(b),
+                  fontSize: `${sizeCqh}cqh`,
+                  textShadow: "0 1px 8px rgba(0,0,0,0.25)",
+                }}
+              >
+                <Editable
+                  value={val}
+                  dir={isHe ? "rtl" : "ltr"}
+                  onChange={(t) => setEdits((p) => ({ ...p, [b.id]: t }))}
+                  onFocus={() => setSelectedBlock(b.id)}
+                />
+                <span
+                  className="studio-handle studio-handle-move"
+                  title="גרור להזזה"
+                  onPointerDown={(e) => startBlockDrag(e, b, "move")}
+                  onPointerMove={moveBlockDrag}
+                  onPointerUp={endBlockDrag}
+                ><IconMove size={11} /></span>
+                <span
+                  className="studio-handle studio-handle-resize"
+                  title="גרור לשינוי גודל"
+                  onPointerDown={(e) => startBlockDrag(e, b, "resize")}
+                  onPointerMove={moveBlockDrag}
+                  onPointerUp={endBlockDrag}
+                ><IconResize size={11} /></span>
+              </div>
+            );
+          })}
+          {logoDataUrl && showLivePreview && (
+            (() => {
+              const lb = a.brand?.logoBbox ?? DEFAULT_LOGO_BBOX;
+              return (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={logoDataUrl} alt="לוגו"
+                  className="pointer-events-none absolute object-contain"
+                  style={{ left: `${lb.x * 100}%`, top: `${lb.y * 100}%`, width: `${lb.w * 100}%`, height: `${lb.h * 100}%` }} />
+              );
+            })()
           )}
         </div>
-        <div className="mb-4 flex justify-center">
-          <button onClick={() => improveCopy()} disabled={improving} className="rounded-xl bg-emerald-600/90 px-5 py-2 text-sm font-black hover:bg-emerald-500 disabled:opacity-60">
-            {improving ? "משכלל..." : "✨ שכלל קופי + הסר טביעות AI"}
-          </button>
+        <p className="mt-2 text-center text-[11px] text-[color:var(--text-3)]">
+          {mode === "new" && !bgImage ? "הרקע ייווצר בייצור — זו פלטת המותג · " : ""}
+          הקלד ישירות על הטקסט, גרור את הידיות להזזה ולגודל · בייצור הטקסט מוטבע פיקסל-פרפקט
+        </p>
+      </div>
+    );
+  }
+
+  function selectBlock(id: string) {
+    setSelectedBlock(id);
+    blockCardRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function renderReview() {
+    const a = analysis!;
+    const palette = (a.colors ?? []).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c));
+    return (
+      <div className="mx-auto max-w-5xl animate-fade-up">
+        <div className="mb-6 text-center">
+          <h2 className="text-2xl font-black tracking-tight text-[color:var(--text)]">הסטודיו</h2>
+          <p className="mt-1.5 text-sm text-[color:var(--text-2)]">מה שרואים כאן יוטבע מדויק בכל {count} הווריאציות.{hasHebrew && " שים לב לאותיות דומות (ר/ד, ך/ן)."}</p>
         </div>
 
         {/* Brand Kit — extracted identity, reused across every generation */}
-        {((analysis!.colors?.length ?? 0) > 0 || analysis!.toneOfVoice) && (
-          <div className="mb-5 rounded-xl bg-zinc-900/70 p-4 ring-1 ring-zinc-800">
+        {(palette.length > 0 || a.toneOfVoice) && (
+          <div className="surface mb-5 rounded-xl p-4">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-black text-zinc-300">🎨 Brand Kit שזוהה</span>
-              <span className="text-[10px] text-zinc-600">מוזרק לכל הווריאציות</span>
+              <span className="flex items-center gap-2 text-xs font-bold text-[color:var(--text)]">
+                <IconPalette size={15} className="text-[color:var(--accent)]" /> Brand Kit שזוהה
+              </span>
+              <span className="text-[10px] text-[color:var(--text-3)]">מוזרק לכל הווריאציות</span>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {(analysis!.colors ?? []).slice(0, 6).map((c, i) => (
-                <span key={i} className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                  <span className="inline-block h-5 w-5 rounded-md ring-1 ring-zinc-700" style={{ backgroundColor: c }} />
-                  <span className="mono" dir="ltr">{c}</span>
+              {palette.slice(0, 6).map((c, i) => (
+                <span key={i} className="flex items-center gap-1.5 text-[11px] text-[color:var(--text-2)]">
+                  <span className="inline-block h-5 w-5 rounded-md border border-[color:var(--border-strong)]" style={{ backgroundColor: c }} />
+                  <span dir="ltr">{c}</span>
                 </span>
               ))}
-              {analysis!.toneOfVoice && (
-                <span className="rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-300">
-                  טון: {analysis!.toneOfVoice}
-                </span>
+              {a.toneOfVoice && (
+                <span className="rounded-full border border-[color:var(--border)] px-3 py-1 text-xs text-[color:var(--text-2)]">טון: {a.toneOfVoice}</span>
               )}
             </div>
           </div>
         )}
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-[220px_1fr]">
-          {(previewUrl || productPreview) && (
-            <div className="sm:sticky sm:top-4 sm:self-start">
-              <img src={(previewUrl ?? productPreview)!} alt="" className="w-full rounded-xl ring-1 ring-zinc-800" />
-              <p className="mt-2 text-center text-xs text-zinc-500">{mode === "new" ? "תמונת המוצר" : "הקריאייטיב המקורי"}</p>
-            </div>
-          )}
+        {renderConsultant()}
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_400px]">
+          {renderStudioCanvas()}
+
           <div className="space-y-3">
-            {analysis!.textBlocks.map((b) => {
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs font-bold text-[color:var(--text)]">
+                <IconPencil size={13} className="text-[color:var(--accent)]" /> בלוקים של טקסט
+              </span>
+              <button onClick={() => improveCopy()} disabled={improving} className="btn btn-secondary h-8 px-3 text-xs">
+                <IconSparkle size={13} /> {improving ? "משכלל…" : "שכלל קופי"}
+              </button>
+            </div>
+            {a.textBlocks.map((b) => {
               const val = edits[b.id] ?? b.text;
               const isHe = (b.language ?? "").startsWith("he") || HEBREW_RE.test(val);
+              const active = selectedBlock === b.id;
+              const wKey = weightEdits[b.id] ?? b.font.weight ?? "regular";
               return (
-                <div key={b.id} className="rounded-xl bg-zinc-900/70 p-3 ring-1 ring-zinc-800">
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <span className="text-xs font-bold text-zinc-400">{ROLE_LABELS[b.role] ?? b.role}</span>
-                    <span className="flex items-center gap-2">
-                      <select
-                        value={fontEdits[b.id] ?? (FONT_OPTIONS.includes(b.font.likelyFamily) ? b.font.likelyFamily : "")}
-                        onChange={(e) => setFontEdits((p) => ({ ...p, [b.id]: e.target.value }))}
-                        className="rounded-md bg-zinc-950 px-1.5 py-0.5 text-[11px] text-zinc-300 ring-1 ring-zinc-800"
-                      >
-                        <option value="" disabled>פונט…</option>
-                        {FONT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
-                      </select>
-                      <input
-                        type="color"
-                        value={colorEdits[b.id] ?? (/^#[0-9a-fA-F]{6}$/.test(b.color ?? "") ? b.color! : "#111111")}
-                        onChange={(e) => setColorEdits((p) => ({ ...p, [b.id]: e.target.value }))}
-                        title="צבע הטקסט"
-                        className="h-6 w-8 cursor-pointer rounded-md bg-zinc-950 ring-1 ring-zinc-800"
-                      />
+                <div key={b.id}
+                  ref={(el) => { blockCardRefs.current[b.id] = el; }}
+                  onClick={() => setSelectedBlock(b.id)}
+                  className={`surface rounded-xl p-3 transition ${active ? "!border-[color:var(--accent)]" : "hover:border-[color:var(--border-strong)]"}`}>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-[color:var(--text-3)]">{ROLE_LABELS[b.role] ?? b.role}</span>
+                    <span className="flex items-center gap-1">
+                      {WEIGHT_CHOICES.map((w) => (
+                        <button key={w.key}
+                          onClick={(e) => { e.stopPropagation(); setWeightEdits((p) => ({ ...p, [b.id]: w.key })); }}
+                          title={w.label}
+                          style={{ fontWeight: w.css }}
+                          className={`h-6 w-6 rounded-md text-[11px] transition ${wKey === w.key || (w.key === "bold" && wKey === "medium") ? "bg-[color:var(--accent)] text-[color:var(--accent-ink)]" : "bg-[color:var(--surface-3)] text-[color:var(--text-2)] hover:text-[color:var(--text)]"}`}>
+                          א
+                        </button>
+                      ))}
                     </span>
                   </div>
-                  <textarea value={val} onChange={(e) => setEdits((p) => ({ ...p, [b.id]: e.target.value }))}
+                  <textarea value={val}
+                    onChange={(e) => setEdits((p) => ({ ...p, [b.id]: e.target.value }))}
+                    onFocus={() => setSelectedBlock(b.id)}
                     dir={isHe ? "rtl" : "ltr"} rows={val.includes("\n") ? 2 : 1}
-                    style={{ fontFamily: `"${fontEdits[b.id] ?? b.font.likelyFamily}", sans-serif`, color: colorEdits[b.id] ?? undefined }}
-                    className="w-full resize-y rounded-lg bg-zinc-950 px-3 py-2 text-lg text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500" />
+                    style={{ fontFamily: `"${blockFamily(b)}", sans-serif`, fontWeight: blockWeight(b), color: blockColor(b) }}
+                    className="field w-full resize-y bg-black/30 px-3 py-2 text-lg" />
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <FontPicker
+                      value={blockFamily(b)}
+                      isHebrew={isHe}
+                      onChange={(f) => setFontEdits((p) => ({ ...p, [b.id]: f }))}
+                    />
+                    <span className="flex items-center gap-1.5">
+                      {[...palette.slice(0, 5), "#FFFFFF", "#111111"].map((c) => (
+                        <button key={c}
+                          onClick={(e) => { e.stopPropagation(); setColorEdits((p) => ({ ...p, [b.id]: c })); }}
+                          title={c}
+                          className={`h-5 w-5 rounded-full border transition hover:scale-110 ${blockColor(b).toLowerCase() === c.toLowerCase() ? "border-[color:var(--accent)] ring-1 ring-[color:var(--accent)]" : "border-[color:var(--border-strong)]"}`}
+                          style={{ backgroundColor: c }} />
+                      ))}
+                      <input type="color" value={blockColor(b)}
+                        onChange={(e) => setColorEdits((p) => ({ ...p, [b.id]: e.target.value }))}
+                        title="צבע חופשי"
+                        className="field h-6 w-8 cursor-pointer p-0.5" />
+                    </span>
+                  </div>
                 </div>
               );
             })}
+            {logoDataUrl && (
+              <p className="surface flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold text-[color:var(--text-2)]">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={logoDataUrl} alt="" className="h-5 w-5 rounded bg-white object-contain" />
+                <IconTag size={12} /> הלוגו יוטבע במדויק על כל וריאציה
+              </p>
+            )}
           </div>
         </div>
+
         {uiError && <ErrBox msg={uiError} />}
         <div className="mt-6 flex flex-wrap gap-3">
-          <button onClick={confirmAndGenerate} disabled={busy} className="flex-1 rounded-2xl bg-fuchsia-600 py-4 text-lg font-black hover:bg-fuchsia-500 disabled:bg-zinc-800 disabled:text-zinc-600">
-            {busy ? "מתחיל..." : `✓ אשר וצור ${count} וריאציות`}
+          <button onClick={confirmAndGenerate} disabled={busy} className="btn btn-primary flex-1 py-3.5 text-base">
+            {busy ? "מתחיל…" : <><IconCheck size={17} /> אשר וצור {count} וריאציות</>}
           </button>
-          <button onClick={reset} className="rounded-2xl bg-zinc-800 px-6 py-4 font-black hover:bg-zinc-700">ביטול</button>
+          <button onClick={reset} className="btn btn-secondary px-6 py-3.5">ביטול</button>
         </div>
+      </div>
+    );
+  }
+
+  /* ----- marketing consultant (offer type, ideas, alternative selling points) ----- */
+  function renderConsultant() {
+    const a = analysis!;
+    const ideas = a.marketingIdeas ?? [];
+    const points = a.sellingPoints ?? [];
+    if (ideas.length === 0 && points.length === 0) return null;
+    const pickedCount = ideas.filter((i) => pickedIdeas[i.title]).length
+      + points.filter((s) => pickedPoints[s.point]).length;
+    return (
+      <div className="surface mb-5 rounded-xl p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="flex items-center gap-2 text-xs font-bold text-[color:var(--text)]">
+            <IconLightbulb size={15} className="text-[color:var(--accent)]" /> היועץ השיווקי
+            {a.offerType && OFFER_LABELS[a.offerType] && (
+              <span className="rounded-full border border-[color:var(--border)] px-2.5 py-0.5 text-[11px] font-semibold text-[color:var(--text-2)]">
+                זוהה: {OFFER_LABELS[a.offerType]}
+              </span>
+            )}
+          </span>
+          <span className="text-[10px] text-[color:var(--text-3)]">
+            {pickedCount > 0 ? `${pickedCount} הצעות נבחרו — ישולבו בתכנון הווריאציות` : "בחר הצעות כדי לכוון את הווריאציות (אופציונלי)"}
+          </span>
+        </div>
+
+        {ideas.length > 0 && (
+          <div className="mb-3">
+            <p className="mb-2 text-[11px] font-semibold text-[color:var(--text-3)]">רעיונות לשיווק ה{OFFER_LABELS[a.offerType ?? ""] ?? "מוצר"}</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {ideas.map((i) => {
+                const on = !!pickedIdeas[i.title];
+                return (
+                  <button key={i.title} onClick={() => setPickedIdeas((p) => ({ ...p, [i.title]: !on }))}
+                    className={`rounded-lg border p-2.5 text-right text-xs transition ${on ? "border-[color:var(--accent)] bg-[color:var(--accent)]/6 text-[color:var(--text)]" : "border-[color:var(--border)] bg-[color:var(--surface-2)] text-[color:var(--text-2)] hover:border-[color:var(--border-strong)]"}`}>
+                    <span className="flex items-center gap-1.5 font-bold">
+                      {on && <IconCheck size={12} className="text-[color:var(--accent)]" />}{i.title}
+                    </span>
+                    <span className="mt-0.5 block leading-relaxed text-[11px] opacity-80">{i.idea}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {points.length > 0 && (
+          <div>
+            <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-[color:var(--text-3)]">
+              <IconTarget size={12} /> נקודות מכירה חלופיות — לחיצה משלבת בווריאציות, העט משכתב את הקופי סביבה
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {points.map((s) => {
+                const on = !!pickedPoints[s.point];
+                return (
+                  <span key={s.point} title={s.why || undefined}
+                    className={`chip py-1 pl-1.5 pr-3 text-xs ${on ? "chip-on" : ""}`}>
+                    <button onClick={() => setPickedPoints((p) => ({ ...p, [s.point]: !on }))} className="flex items-center gap-1 font-semibold">
+                      {on && <IconCheck size={11} />}{s.point}
+                    </button>
+                    <button onClick={() => improveCopy(`שלב את נקודת המכירה "${s.point}" בקופי בצורה טבעית וחדה`)}
+                      disabled={improving} title="שכתב את הקופי סביב נקודת המכירה הזו"
+                      className="grid h-5 w-5 place-items-center rounded-full bg-[color:var(--surface-3)] text-[color:var(--text-2)] transition hover:text-[color:var(--text)] disabled:opacity-50">
+                      <IconPencil size={10} />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -685,31 +1038,166 @@ export default function CreativeMachine() {
   }
 
   /* ----- gallery ----- */
+  function filteredVariations(): Variation[] {
+    const list = sortedVariations();
+    switch (galleryFilter) {
+      case "done": return list.filter((v) => v.status === "done");
+      case "weak": return list.filter((v) => v.status === "done" && v.score && v.score.total < 6);
+      case "failed": return list.filter((v) => v.status === "failed");
+      default: return list;
+    }
+  }
+
   function renderGallery() {
-    const steps = ["מתכנן", "מייצר"];
     const active = phase === "generating";
+    const failedCount = variations.filter((v) => v.status === "failed").length;
+    const weakCount = variations.filter((v) => v.status === "done" && v.score && v.score.total < 6).length;
+    const filters: { key: typeof galleryFilter; label: string; show: boolean }[] = [
+      { key: "all", label: `הכל (${variations.length})`, show: true },
+      { key: "done", label: `מוכנות (${doneCount})`, show: doneCount > 0 },
+      { key: "weak", label: `חלשות (${weakCount})`, show: weakCount > 0 },
+      { key: "failed", label: `נכשלו (${failedCount})`, show: failedCount > 0 },
+    ];
     return (
-      <div>
-        <div className="mb-6 flex items-center justify-center gap-3">
-          {steps.map((s, i) => (
-            <div key={s} className={`rounded-full px-4 py-2 text-sm font-semibold ${active && i === 1 ? "bg-fuchsia-500/20 text-fuchsia-300 animate-pulse-soft" : "bg-emerald-500/15 text-emerald-300"}`}>
-              {s} {i === 1 && <span className="font-black">{doneCount}/{count}</span>}
+      <div className="animate-fade-up">
+        {active && (
+          <div className="surface mx-auto mb-6 max-w-md rounded-2xl p-4 text-center">
+            <p className="flex items-center justify-center gap-2 text-sm font-bold text-[color:var(--text)]">
+              <IconSparkle size={15} className="text-[color:var(--accent)] animate-pulse-soft" /> מייצר וריאציות…
+            </p>
+            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[color:var(--surface-3)]">
+              <div className="h-full rounded-full bg-[color:var(--accent)] transition-all duration-700"
+                style={{ width: `${Math.max((doneCount / count) * 100, 4)}%` }} />
             </div>
-          ))}
-        </div>
-        {phase === "failed" && <div className="mb-6 rounded-xl bg-red-500/10 p-4 text-center text-red-400">{uiError ?? "נעצר"} <button onClick={reset} className="mr-3 underline">התחל מחדש</button></div>}
-        {phase === "done" && variations.some((v) => v.score) && (
-          <p className="mb-4 text-center text-xs text-zinc-500">📊 ממוין לפי ציון ה-Scorecard — הכי חזק ראשון</p>
+            <p className="mt-2 text-xs text-[color:var(--text-2)]" dir="rtl">{doneCount} מתוך {count} מוכנות</p>
+          </div>
         )}
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
-          {sortedVariations().map((v) => (
-            <VarCard key={v.id} v={v} onDownload={() => downloadOne(v)} onRegenerate={() => regenerateOne(v.id)} />
+        {phase === "failed" && (
+          <div className="mb-6 flex items-center justify-center gap-3 rounded-xl border border-[color:var(--danger)]/25 bg-[color:var(--danger)]/8 p-4 text-center text-sm text-[color:var(--danger)]">
+            <IconAlert size={16} className="shrink-0" /> {uiError ?? "נעצר"}
+            <button onClick={reset} className="underline">התחל מחדש</button>
+          </div>
+        )}
+        {!active && variations.length > 0 && (
+          <div className="mb-5 flex flex-wrap items-center justify-center gap-2">
+            {filters.filter((f) => f.show).map((f) => (
+              <button key={f.key} onClick={() => setGalleryFilter(f.key)}
+                className={`chip px-4 py-1.5 text-xs ${galleryFilter === f.key ? "chip-on" : ""}`}>
+                {f.label}
+              </button>
+            ))}
+            {phase === "done" && variations.some((v) => v.score) && (
+              <span className="flex items-center gap-1.5 text-xs text-[color:var(--text-3)]">
+                <IconChart size={12} /> ממוין לפי ציון — הכי חזק ראשון
+              </span>
+            )}
+          </div>
+        )}
+        <div className="stagger grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          {filteredVariations().map((v) => (
+            <VarCard key={v.id} v={v}
+              onDownload={() => downloadOne(v)}
+              onRegenerate={() => regenerateOne(v.id)}
+              onOpen={() => v.blobUrl && setLightboxId(v.id)} />
           ))}
-          {variations.length === 0 && Array.from({ length: Math.min(count, 6) }).map((_, i) => <div key={i} className="aspect-square animate-pulse-soft rounded-2xl bg-zinc-900/80" />)}
+          {variations.length === 0 && Array.from({ length: Math.min(count, 6) }).map((_, i) => <div key={i} className="aspect-square animate-shimmer rounded-2xl" />)}
         </div>
-        <div className="mt-8 flex flex-wrap justify-center gap-4">
-          {doneCount > 0 && <button onClick={downloadZip} disabled={zipping} className="rounded-2xl bg-emerald-600 px-8 py-3 font-black hover:bg-emerald-500 disabled:opacity-60">{zipping ? "אורז..." : `⬇ הורד הכל (${doneCount})`}</button>}
-          {(phase === "done" || phase === "failed") && <button onClick={reset} className="rounded-2xl bg-zinc-800 px-8 py-3 font-black hover:bg-zinc-700">🎨 קריאייטיב חדש</button>}
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          {doneCount > 0 && (
+            <button onClick={downloadZip} disabled={zipping} className="btn btn-primary px-7 py-3">
+              <IconArchive size={16} /> {zipping ? "אורז…" : `הורד הכל (${doneCount})`}
+            </button>
+          )}
+          {(phase === "done" || phase === "failed") && (
+            <button onClick={reset} className="btn btn-secondary px-7 py-3">
+              <IconPlus size={16} /> קריאייטיב חדש
+            </button>
+          )}
+        </div>
+        {renderLightbox()}
+      </div>
+    );
+  }
+
+  /* ----- lightbox ----- */
+  function renderLightbox() {
+    const openable = variations.filter((v) => v.blobUrl);
+    const idx = openable.findIndex((v) => v.id === lightboxId);
+    const v = idx >= 0 ? openable[idx] : null;
+    if (!v) return null;
+    const go = (d: number) => setLightboxId(openable[(idx + d + openable.length) % openable.length].id);
+    const canCompare = mode === "variations" && !!previewUrl;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm animate-zoom-in"
+        onClick={() => setLightboxId(null)}>
+        <div className="flex max-h-full w-full max-w-5xl flex-col gap-4 lg:flex-row" onClick={(e) => e.stopPropagation()}>
+          <div className="relative flex min-h-0 flex-1 items-center justify-center">
+            {compareOn && canCompare ? (
+              <div className="grid w-full grid-cols-2 gap-3">
+                <figure className="min-w-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={previewUrl!} alt="המקור" className="max-h-[74vh] w-full rounded-2xl object-contain shadow-2xl" />
+                  <figcaption className="mt-2 text-center text-xs font-semibold text-[color:var(--text-2)]">המקור</figcaption>
+                </figure>
+                <figure className="min-w-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={v.blobUrl!} alt={v.marketingAngle} className="max-h-[74vh] w-full rounded-2xl object-contain shadow-2xl" />
+                  <figcaption className="mt-2 text-center text-xs font-semibold text-[color:var(--accent)]"><span dir="ltr">{v.id}</span> · הווריאציה</figcaption>
+                </figure>
+              </div>
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img src={v.blobUrl!} alt={v.marketingAngle} className="max-h-[80vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl" />
+            )}
+            {openable.length > 1 && !compareOn && (
+              <>
+                <button onClick={() => go(1)} className="btn btn-secondary absolute right-2 top-1/2 h-9 w-9 -translate-y-1/2 px-0"><IconChevronRight size={16} /></button>
+                <button onClick={() => go(-1)} className="btn btn-secondary absolute left-2 top-1/2 h-9 w-9 -translate-y-1/2 px-0"><IconChevronLeft size={16} /></button>
+              </>
+            )}
+          </div>
+          <div className="surface w-full shrink-0 self-center rounded-2xl p-5 lg:w-80 lg:self-auto">
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="text-sm font-bold text-[color:var(--text)]">
+                <span className="text-[color:var(--text-3)]" dir="ltr">{v.id}</span> · {v.marketingAngle}
+              </h3>
+              <button onClick={() => setLightboxId(null)} className="btn btn-ghost h-7 w-7 px-0"><IconX size={15} /></button>
+            </div>
+            {canCompare && (
+              <button onClick={() => setCompareOn(!compareOn)}
+                className={`chip mt-2.5 w-full justify-center px-3 py-1.5 text-xs ${compareOn ? "chip-on" : ""}`}>
+                <IconCompare size={13} /> {compareOn ? "סגור השוואה" : "השווה למקור"}
+              </button>
+            )}
+            {v.angleCategory && ANGLE_LABELS[v.angleCategory] && (
+              <span className="mt-2 inline-block rounded-md border border-[color:var(--border)] px-2 py-0.5 text-[11px] font-semibold text-[color:var(--text-2)]">{ANGLE_LABELS[v.angleCategory]}</span>
+            )}
+            {v.angleRationale && <p className="mt-2 text-xs leading-relaxed text-[color:var(--text-2)]">{v.angleRationale}</p>}
+            {v.visualChanges.length > 0 && (
+              <ul className="mt-3 space-y-1 text-xs text-[color:var(--text-3)]">
+                {v.visualChanges.map((c, i) => <li key={i}>· {c}</li>)}
+              </ul>
+            )}
+            {v.score && (
+              <div className="mt-4 space-y-1.5 border-t border-[color:var(--border)] pt-3">
+                {([["Hook", v.score.hook], ["היררכיה", v.score.hierarchy], ["CTA", v.score.cta], ["קריאות", v.score.legibility]] as const).map(([label, val]) => (
+                  <div key={label} className="flex items-center gap-2 text-[11px] text-[color:var(--text-2)]">
+                    <span className="w-14 shrink-0">{label}</span>
+                    <span className="h-1 flex-1 overflow-hidden rounded-full bg-[color:var(--surface-3)]">
+                      <span className={`block h-full rounded-full ${val >= 7 ? "bg-[color:var(--ok)]" : val >= 5.5 ? "bg-[color:var(--warn)]" : "bg-[color:var(--danger)]"}`} style={{ width: `${val * 10}%` }} />
+                    </span>
+                    <span className="w-6 text-left font-bold" dir="ltr">{val}</span>
+                  </div>
+                ))}
+                <p className="pt-1 text-center text-sm font-bold text-[color:var(--text)]">ציון כולל: <span dir="ltr">{v.score.total.toFixed(1)}</span></p>
+                {v.score.verdict && <p className="text-center text-xs text-[color:var(--text-3)]">{v.score.verdict}</p>}
+              </div>
+            )}
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => downloadOne(v)} className="btn btn-primary h-9 flex-1 text-sm"><IconDownload size={14} /> הורדה</button>
+              <button onClick={() => { setLightboxId(null); regenerateOne(v.id); }} className="btn btn-secondary h-9 w-10 px-0" title="ייצר מחדש"><IconRefresh size={14} /></button>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -717,84 +1205,224 @@ export default function CreativeMachine() {
 }
 
 /* ---------- presentational ---------- */
-const btnPrimary = "mt-6 w-full rounded-2xl bg-fuchsia-600 py-4 text-xl font-black transition hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600";
+const btnPrimary = "btn btn-primary mt-6 w-full py-3.5 text-base";
+
+const STEP_NAMES = ["התחלה", "הגדרות", "סטודיו", "ייצור", "גלריה"];
+
+function Stepper({ current }: { current: number }) {
+  return (
+    <div className="mb-8 flex items-center justify-center" dir="rtl">
+      {STEP_NAMES.map((name, i) => {
+        const state = i < current ? "done" : i === current ? "active" : "todo";
+        return (
+          <div key={name} className="flex items-center">
+            {i > 0 && <span className={`mx-2 h-px w-6 sm:w-10 ${i <= current ? "bg-[color:var(--accent)]" : "bg-[color:var(--surface-3)]"}`} />}
+            <span className="flex items-center gap-2">
+              <span className={`grid h-6 w-6 place-items-center rounded-full text-[11px] font-bold transition ${
+                state === "active" ? "bg-[color:var(--accent)] text-[color:var(--accent-ink)]"
+                : state === "done" ? "bg-[color:var(--surface-3)] text-[color:var(--accent)]"
+                : "border border-[color:var(--border)] text-[color:var(--text-3)]"}`}>
+                {state === "done" ? <IconCheck size={12} /> : i + 1}
+              </span>
+              <span className={`hidden text-xs font-semibold sm:inline ${
+                state === "active" ? "text-[color:var(--text)]" : state === "done" ? "text-[color:var(--text-2)]" : "text-[color:var(--text-3)]"}`}>
+                {name}
+              </span>
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function Home({ onVariations, onNew }: { onVariations: () => void; onNew: () => void }) {
   return (
-    <div className="mx-auto max-w-2xl">
-      <p className="mb-6 text-center text-zinc-400">במה נתחיל?</p>
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <button onClick={onVariations} className="rounded-2xl bg-zinc-900/70 p-8 text-center ring-1 ring-zinc-800 transition hover:ring-fuchsia-500">
-          <div className="text-5xl">🖼️</div>
-          <h3 className="mt-4 text-lg font-black text-zinc-100">וריאציות מקריאייטיב קיים</h3>
-          <p className="mt-2 text-sm text-zinc-400">מעלים מודעה — מקבלים עשרות וריאציות עם אותו טקסט ופונט.</p>
+    <div className="mx-auto max-w-3xl animate-fade-up pt-6">
+      <h2 className="text-center text-3xl font-black tracking-tight text-[color:var(--text)]">
+        קריאייטיב אחד. <span className="text-[color:var(--accent)]">ארבעים</span> וריאציות.
+      </h2>
+      <p className="mx-auto mt-3 max-w-md text-center text-sm leading-relaxed text-[color:var(--text-2)]">
+        אותו טקסט, אותו פונט, זווית שיווקית חדשה בכל וריאציה — עם יועץ שיווקי מובנה וסטודיו עריכה חי.
+      </p>
+      <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <button onClick={onVariations} className="surface group rounded-2xl p-7 text-right transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)]">
+          <span className="grid h-10 w-10 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]">
+            <IconLayers size={20} />
+          </span>
+          <h3 className="mt-4 text-base font-bold text-[color:var(--text)]">וריאציות מקריאייטיב קיים</h3>
+          <p className="mt-1.5 text-sm leading-relaxed text-[color:var(--text-2)]">מעלים מודעה — מקבלים עשרות וריאציות עם אותו טקסט ופונט.</p>
+          <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[color:var(--accent)] opacity-0 transition group-hover:opacity-100">
+            התחל <IconArrowRight size={13} className="rotate-180" />
+          </span>
         </button>
-        <button onClick={onNew} className="rounded-2xl bg-zinc-900/70 p-8 text-center ring-1 ring-zinc-800 transition hover:ring-fuchsia-500">
-          <div className="text-5xl">✨</div>
-          <h3 className="mt-4 text-lg font-black text-zinc-100">יצירת קריאייטיב חדש</h3>
-          <p className="mt-2 text-sm text-zinc-400">מתארים מוצר/מבצע — ה-AI מעצב מודעה חדשה מאפס, כולל קופי.</p>
+        <button onClick={onNew} className="surface group rounded-2xl p-7 text-right transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)]">
+          <span className="grid h-10 w-10 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]">
+            <IconWand size={20} />
+          </span>
+          <h3 className="mt-4 text-base font-bold text-[color:var(--text)]">יצירת קריאייטיב חדש</h3>
+          <p className="mt-1.5 text-sm leading-relaxed text-[color:var(--text-2)]">מתארים מוצר או מבצע — המערכת מעצבת מודעה מאפס, כולל קופי.</p>
+          <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[color:var(--accent)] opacity-0 transition group-hover:opacity-100">
+            התחל <IconArrowRight size={13} className="rotate-180" />
+          </span>
         </button>
       </div>
-      <p className="mt-6 text-center text-xs text-zinc-600">אפשר גם פשוט לומר לצ'אט מה לעשות ←</p>
+      <p className="mt-8 text-center text-xs text-[color:var(--text-3)]">אפשר גם פשוט לכתוב לעוזר בצד מה לעשות</p>
+    </div>
+  );
+}
+
+/**
+ * Uncontrolled contentEditable text that stays in sync with external state
+ * without caret jumps: DOM text is only written when it differs from the
+ * prop (i.e. the change came from the side editor, not from typing here).
+ */
+function Editable({ value, dir, onChange, onFocus }: {
+  value: string; dir: "rtl" | "ltr"; onChange: (t: string) => void; onFocus?: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && el.innerText.replace(/\n$/, "") !== value) el.innerText = value;
+  }, [value]);
+  return (
+    <div
+      ref={ref}
+      contentEditable
+      suppressContentEditableWarning
+      dir={dir}
+      spellCheck={false}
+      onInput={() => onChange((ref.current?.innerText ?? "").replace(/\n$/, ""))}
+      onFocus={onFocus}
+      className="studio-editable"
+    />
+  );
+}
+
+/** WYSIWYG font picker — every family is rendered in itself, Hebrew-capable first. */
+function FontPicker({ value, isHebrew, onChange }: {
+  value: string; isHebrew: boolean; onChange: (family: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const list = isHebrew
+    ? [...FONT_OPTIONS].sort((a, b) => Number(HEBREW_FONTS.has(b)) - Number(HEBREW_FONTS.has(a)))
+    : FONT_OPTIONS;
+  return (
+    <div className="relative">
+      <button onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        style={{ fontFamily: `"${value}", sans-serif` }}
+        className="field flex items-center gap-1.5 px-2.5 py-1 text-sm">
+        {value} <IconChevronDown size={12} className="text-[color:var(--text-3)]" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
+          <div className="surface absolute right-0 z-30 mt-1 max-h-72 w-64 overflow-y-auto rounded-xl p-1 shadow-2xl shadow-black/60 animate-zoom-in">
+            {list.map((f) => (
+              <button key={f}
+                onClick={(e) => { e.stopPropagation(); onChange(f); setOpen(false); }}
+                className={`block w-full rounded-lg px-3 py-2 text-right transition hover:bg-[color:var(--surface-2)] ${f === value ? "bg-[color:var(--surface-2)]" : ""}`}>
+                <span className="flex items-center justify-between text-[10px] text-[color:var(--text-3)]">
+                  <span className="text-[color:var(--accent)]">{f === value ? <IconCheck size={11} /> : ""}</span>
+                  <span dir="ltr">{f}{HEBREW_FONTS.has(f) ? " · עברית" : ""}</span>
+                </span>
+                <span style={{ fontFamily: `"${f}"` }} className="block truncate text-lg leading-snug text-[color:var(--text)]">
+                  {isHebrew && HEBREW_FONTS.has(f) ? "מבצע ענק 50%" : "Big Sale 50%"}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 function BackBar({ onBack, title }: { onBack: () => void; title: string }) {
   return (
-    <div className="mb-5 flex items-center gap-3">
-      <button onClick={onBack} className="rounded-lg bg-zinc-800 px-3 py-1 text-sm hover:bg-zinc-700">→ חזרה</button>
-      <h2 className="font-black text-zinc-200">{title}</h2>
+    <div className="mb-6 flex items-center gap-3">
+      <button onClick={onBack} className="btn btn-ghost h-8 px-2.5 text-sm">
+        <IconArrowRight size={15} /> חזרה
+      </button>
+      <h2 className="text-lg font-bold tracking-tight text-[color:var(--text)]">{title}</h2>
     </div>
   );
 }
 
 function ErrBox({ msg }: { msg: string }) {
-  return <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-center text-red-400">{msg}</p>;
+  return (
+    <p className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[color:var(--danger)]/25 bg-[color:var(--danger)]/8 p-3 text-center text-sm text-[color:var(--danger)]">
+      <IconAlert size={15} className="shrink-0" /> {msg}
+    </p>
+  );
 }
 
 function ScoreBadge({ score }: { score: Score }) {
   const t = score.total;
-  const color = t >= 7 ? "bg-emerald-500/90 text-black" : t >= 5.5 ? "bg-amber-400/90 text-black" : "bg-red-500/90 text-white";
+  const dot = t >= 7 ? "bg-[color:var(--ok)]" : t >= 5.5 ? "bg-[color:var(--warn)]" : "bg-[color:var(--danger)]";
   return (
     <span
-      className={`absolute top-2 right-2 rounded-full px-2 py-0.5 text-[12px] font-black ${color}`}
+      className="absolute top-2 right-2 flex items-center gap-1.5 rounded-full border border-[color:var(--border)] bg-black/70 px-2 py-0.5 text-[12px] font-bold text-[color:var(--text)] backdrop-blur"
       title={`Hook ${score.hook} · היררכיה ${score.hierarchy} · CTA ${score.cta} · קריאות ${score.legibility}`}
     >
-      📊 {t.toFixed(1)}
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} /> {t.toFixed(1)}
     </span>
   );
 }
 
-function VarCard({ v, onDownload, onRegenerate }: { v: Variation; onDownload: () => void; onRegenerate: () => void }) {
+function VarCard({ v, onDownload, onRegenerate, onOpen }: {
+  v: Variation; onDownload: () => void; onRegenerate: () => void; onOpen: () => void;
+}) {
   const labels: Record<VarStatus, string> = { planned: "בתור", submitted: "נשלח", generating: "מייצר...", done: "מוכן", failed: "נכשל" };
   const weak = v.status === "done" && v.score && v.score.total < 6;
   return (
-    <div className="overflow-hidden rounded-2xl bg-zinc-900/80 ring-1 ring-zinc-800">
-      <div className="relative aspect-square bg-zinc-950">
-        {v.blobUrl ? <img src={v.blobUrl} alt={v.marketingAngle} className="h-full w-full object-contain" />
-          : <div className="flex h-full items-center justify-center">{v.status === "failed" ? <span className="px-4 text-center text-sm text-red-400">✗ {v.error}</span> : <span className="animate-pulse-soft text-4xl">✨</span>}</div>}
-        <span className={`absolute top-2 left-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${v.status === "done" ? "bg-emerald-500/90 text-black" : v.status === "failed" ? "bg-red-500/90 text-white" : "bg-zinc-700/90 text-zinc-200"}`}>{labels[v.status]}</span>
+    <div className="surface group overflow-hidden rounded-xl transition hover:border-[color:var(--border-strong)]">
+      <div className="relative aspect-square cursor-pointer bg-black/40" onClick={onOpen}>
+        {v.blobUrl ? (
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={v.blobUrl} alt={v.marketingAngle} className="h-full w-full object-contain" />
+            <div className="absolute inset-0 flex items-end justify-center gap-2 bg-gradient-to-t from-black/75 via-transparent to-transparent p-3 opacity-0 transition group-hover:opacity-100">
+              <button onClick={(e) => { e.stopPropagation(); onOpen(); }} className="btn btn-secondary h-8 px-3 text-xs"><IconMaximize size={13} /> הגדל</button>
+              <button onClick={(e) => { e.stopPropagation(); onDownload(); }} className="btn btn-secondary h-8 px-3 text-xs"><IconDownload size={13} /> הורד</button>
+              <button onClick={(e) => { e.stopPropagation(); onRegenerate(); }} className="btn btn-secondary h-8 w-8 px-0 text-xs" title="ייצר מחדש"><IconRefresh size={13} /></button>
+            </div>
+          </>
+        ) : (
+          <div className="flex h-full items-center justify-center">
+            {v.status === "failed"
+              ? <span className="flex items-center gap-2 px-4 text-center text-sm text-[color:var(--danger)]"><IconAlert size={15} className="shrink-0" /> {v.error}</span>
+              : <div className="animate-shimmer absolute inset-0" />}
+          </div>
+        )}
+        <span className={`absolute top-2 left-2 rounded-full border border-[color:var(--border)] bg-black/70 px-2 py-0.5 text-[11px] font-semibold backdrop-blur ${
+          v.status === "done" ? "text-[color:var(--ok)]" : v.status === "failed" ? "text-[color:var(--danger)]" : "text-[color:var(--text-2)]"}`}>
+          {labels[v.status]}
+        </span>
         {v.score && <ScoreBadge score={v.score} />}
-        {v.scoring && <span className="absolute top-2 right-2 rounded-full bg-zinc-700/90 px-2 py-0.5 text-[11px] text-zinc-300 animate-pulse-soft">מנקד...</span>}
+        {v.scoring && <span className="absolute top-2 right-2 rounded-full border border-[color:var(--border)] bg-black/70 px-2 py-0.5 text-[11px] text-[color:var(--text-2)] backdrop-blur animate-pulse-soft">מנקד…</span>}
       </div>
       <div className="p-4">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="font-black text-fuchsia-300">
-            {v.id} · {v.marketingAngle}
+          <h3 className="text-sm font-bold text-[color:var(--text)]">
+            <span className="text-[color:var(--text-3)]" dir="ltr">{v.id}</span> · {v.marketingAngle}
             {v.angleCategory && ANGLE_LABELS[v.angleCategory] && (
-              <span className="mr-2 rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] font-bold text-zinc-400">
+              <span className="mr-2 rounded-md border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--text-2)]">
                 {ANGLE_LABELS[v.angleCategory]}
               </span>
             )}
           </h3>
-          {v.blobUrl && <button onClick={onDownload} className="shrink-0 rounded-lg bg-zinc-800 px-2 py-1 text-xs font-bold hover:bg-zinc-700">⬇</button>}
+          {v.blobUrl && (
+            <button onClick={onDownload} className="btn btn-ghost h-7 w-7 shrink-0 px-0" title="הורדה">
+              <IconDownload size={14} />
+            </button>
+          )}
         </div>
-        {v.score?.verdict && <p className="mt-1 text-xs text-zinc-400">💬 {v.score.verdict}</p>}
-        {!v.score?.verdict && v.angleRationale && <p className="mt-1 text-xs text-zinc-500">{v.angleRationale}</p>}
+        {v.score?.verdict && <p className="mt-1 text-xs leading-relaxed text-[color:var(--text-2)]">{v.score.verdict}</p>}
+        {!v.score?.verdict && v.angleRationale && <p className="mt-1 text-xs leading-relaxed text-[color:var(--text-3)]">{v.angleRationale}</p>}
         {weak && (
-          <button onClick={onRegenerate} className="mt-2 w-full rounded-lg bg-amber-500/15 px-2 py-1.5 text-xs font-bold text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25">
-            🔄 ציון נמוך — ייצר מחדש
+          <button onClick={onRegenerate} className="btn mt-2.5 w-full border border-[color:var(--warn)]/30 bg-[color:var(--warn)]/10 py-1.5 text-xs text-[color:var(--warn)] hover:bg-[color:var(--warn)]/18">
+            <IconRefresh size={13} /> ציון נמוך — ייצר מחדש
           </button>
         )}
       </div>
@@ -806,23 +1434,30 @@ function ChatPanel({ messages, input, setInput, onSend, busy }: {
   messages: ChatMsg[]; input: string; setInput: (s: string) => void; onSend: () => void; busy: boolean;
 }) {
   return (
-    <aside className="flex h-[calc(100vh-140px)] min-h-[420px] flex-col rounded-2xl bg-zinc-900/70 ring-1 ring-zinc-800 lg:sticky lg:top-6">
-      <div className="border-b border-zinc-800 px-4 py-3 font-black text-zinc-200">💬 בקר הצ'אט</div>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+    <aside className="surface flex h-[calc(100vh-140px)] min-h-[420px] flex-col rounded-2xl lg:sticky lg:top-20">
+      <div className="flex items-center gap-2 border-b border-[color:var(--border)] px-4 py-3 text-sm font-bold text-[color:var(--text)]">
+        <IconChat size={15} className="text-[color:var(--accent)]" /> העוזר
+      </div>
+      <div className="flex-1 space-y-2.5 overflow-y-auto p-4">
         {messages.map((m, i) => (
-          <div key={i} className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${m.role === "user" ? "mr-auto bg-fuchsia-600 text-white" : "ml-auto bg-zinc-800 text-zinc-200"}`}>
+          <div key={i} className={`max-w-[88%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
+            m.role === "user"
+              ? "mr-auto bg-[color:var(--accent)] text-[color:var(--accent-ink)]"
+              : "ml-auto border border-[color:var(--border)] bg-[color:var(--surface-2)] text-[color:var(--text)]"}`}>
             {m.content}
           </div>
         ))}
-        {busy && <div className="ml-auto max-w-[85%] rounded-2xl bg-zinc-800 px-3 py-2 text-sm text-zinc-400 animate-pulse-soft">חושב...</div>}
+        {busy && <div className="ml-auto max-w-[88%] rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-2)] px-3 py-2 text-sm text-[color:var(--text-3)] animate-pulse-soft">חושב…</div>}
       </div>
-      <div className="border-t border-zinc-800 p-3">
-        <div className="flex gap-2">
+      <div className="border-t border-[color:var(--border)] p-3">
+        <div className="field flex items-center gap-1 p-1">
           <input value={input} onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") onSend(); }} dir="rtl"
-            placeholder="מה נעשה? למשל: תעצב מודעה ל..." disabled={busy}
-            className="flex-1 rounded-xl bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 focus:ring-2 focus:ring-fuchsia-500" />
-          <button onClick={onSend} disabled={busy || !input.trim()} className="rounded-xl bg-fuchsia-600 px-4 font-black hover:bg-fuchsia-500 disabled:bg-zinc-800 disabled:text-zinc-600">↑</button>
+            placeholder="מה נעשה? למשל: תעצב מודעה ל…" disabled={busy}
+            className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm text-[color:var(--text)] outline-none placeholder:text-[color:var(--text-3)]" />
+          <button onClick={onSend} disabled={busy || !input.trim()} className="btn btn-primary h-8 w-8 shrink-0 px-0">
+            <IconSend size={14} />
+          </button>
         </div>
       </div>
     </aside>

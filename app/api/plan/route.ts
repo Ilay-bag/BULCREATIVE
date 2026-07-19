@@ -34,6 +34,10 @@ export async function POST(req: NextRequest) {
   const usedAngles: string[] = Array.isArray(body?.usedAngles)
     ? body.usedAngles.filter((a: unknown) => typeof a === "string")
     : [];
+  const strArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === "string").slice(0, 12) : [];
+  const selectedIdeas = strArray(body?.selectedIdeas);
+  const selectedSellingPoints = strArray(body?.selectedSellingPoints);
 
   try {
     const variations = await planChunk({
@@ -45,6 +49,8 @@ export async function POST(req: NextRequest) {
       renderMode,
       platform,
       hasLogo,
+      selectedIdeas,
+      selectedSellingPoints,
     });
     return NextResponse.json({ variations });
   } catch (err) {

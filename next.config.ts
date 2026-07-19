@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   // serverless functions on Vercel (they are read from disk at runtime)
   outputFileTracingIncludes: {
     // overlay compositing needs the fonts
-    "/api/image": ["./assets/fonts/**"],
+    "/api/image": ["./public/fonts/**"],
     // every model-driven route reads skill prompts from disk
     "/api/analyze": ["./skills/**"],
     "/api/plan": ["./skills/**"],

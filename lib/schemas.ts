@@ -28,6 +28,26 @@ export const TextBlockSchema = z.object({
   bbox: BBoxSchema,
 });
 
+/** What the creative is promoting — drives which marketing ideas fit. */
+export const OFFER_TYPES = [
+  "product", "collection", "flash-sale", "sale", "launch", "brand",
+] as const;
+export type OfferType = (typeof OFFER_TYPES)[number];
+
+/** A concrete, design-actionable idea for marketing the offer shown. */
+export const MarketingIdeaSchema = z.object({
+  title: z.string(),
+  idea: z.string(),
+});
+export type MarketingIdea = z.infer<typeof MarketingIdeaSchema>;
+
+/** An alternative selling point (USP) the creative could lead with instead. */
+export const SellingPointSchema = z.object({
+  point: z.string(),
+  why: z.string().optional().default(""),
+});
+export type SellingPoint = z.infer<typeof SellingPointSchema>;
+
 export const CreativeAnalysisSchema = z.object({
   textBlocks: z.array(TextBlockSchema),
   product: z.string(),
@@ -45,6 +65,9 @@ export const CreativeAnalysisSchema = z.object({
   visualStyle: z.string(),
   marketingAngle: z.string(),
   aspectRatio: z.string().optional().default("1:1"),
+  offerType: z.enum(OFFER_TYPES).catch("product").optional().default("product"),
+  marketingIdeas: z.array(MarketingIdeaSchema).optional().default([]),
+  sellingPoints: z.array(SellingPointSchema).optional().default([]),
 });
 
 export type CreativeAnalysis = z.infer<typeof CreativeAnalysisSchema>;
