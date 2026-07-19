@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { uploadImageBase64 } from "@/lib/kie";
-import { designNew, detectHebrew, resolveRenderMode, rewriteCopy } from "@/lib/pipeline";
+import { designNew, detectHebrew, enforceSansSerif, resolveRenderMode, rewriteCopy } from "@/lib/pipeline";
 import type { TextMode } from "@/lib/schemas";
 
 export const runtime = "nodejs";
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
       sourceUrl = url;
     }
 
-    const spec = await designNew({ brief, productImageUrl, aspectRatio, platform, extraNotes });
+    const spec = enforceSansSerif(await designNew({ brief, productImageUrl, aspectRatio, platform, extraNotes }));
 
     // auto-polish: run the copy through the strong copywriting model before review
     try {

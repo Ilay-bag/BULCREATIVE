@@ -137,6 +137,34 @@ export async function planChunk(params: {
   }));
 }
 
+/** Serif families the app will substitute when a sans-serif look is enforced. */
+const SANS_REPLACEMENT: Record<string, { family: string; category: string }> = {
+  "frank ruhl libre": { family: "Heebo", category: "sans-serif" },
+  "playfair display": { family: "Montserrat", category: "sans-serif" },
+};
+
+/**
+ * Force every text block in a freshly-designed creative to a sans-serif face.
+ * New creatives (design-new) default to sans-serif per product preference —
+ * serif reads dated/mismatched on most ads. Existing-creative fidelity (the
+ * "variations" flow) is untouched; this only runs on AI-designed specs.
+ */
+export function enforceSansSerif(spec: CreativeSpec): CreativeSpec {
+  for (const block of spec.textBlocks) {
+    const key = block.font.likelyFamily.toLowerCase();
+    const replacement = SANS_REPLACEMENT[key];
+    if (replacement) {
+      block.font.likelyFamily = replacement.family;
+      block.font.category = replacement.category;
+    } else if (block.font.category.toLowerCase().includes("serif")
+      && !block.font.category.toLowerCase().includes("sans")) {
+      block.font.likelyFamily = "Heebo";
+      block.font.category = "sans-serif";
+    }
+  }
+  return spec;
+}
+
 /** Score a finished creative (image data URL) against the pre-spend scorecard. */
 export async function scoreCreative(params: {
   imageDataUrl: string;

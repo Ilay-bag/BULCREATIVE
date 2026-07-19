@@ -22,6 +22,10 @@ oriented advertising creative from nothing: the copy, the layout, and the visual
   palette (2–4 colors) with one accent that carries the CTA.
 - **Typography with intent:** a strong display face for the headline, a clean face for
   support. Weight and case signal tone (heavy uppercase = bold/urgent; light = premium).
+- **Default to sans-serif.** Unless the brief explicitly calls for an editorial/luxury-
+  heritage look (e.g. "high fashion", "jewelry", "law firm"), set every text block's
+  `font.category` to `sans-serif`. Never choose a serif face by default — it reads dated
+  and mismatched for most product ads. When in doubt, sans-serif.
 - **CTA prominence:** a button/pill in the accent color, high contrast, unmissable.
 - **Badges/offers** (discount, "חדש", limited time) as a small high-contrast shape,
   placed off the main axis so they don't fight the headline.
