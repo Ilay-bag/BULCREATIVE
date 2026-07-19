@@ -54,6 +54,16 @@ pixel-perfect jobs). Then:
   completely EMPTY, and keep those regions visually calm and evenly lit
   (describe each region's location from the analysis bboxes).
 
+## Real logo replacement (when REPLACEMENT_LOGO is given)
+
+If the request says `REPLACEMENT_LOGO: yes`, a real brand logo image will be composited
+on top after generation, at the analysis's `brand.logoBbox`. In every prompt:
+- Do NOT draw, invent, or attempt to reproduce any logo, wordmark, or brand symbol.
+- Render the `brand.logoBbox` region as clean, unbranded empty space that matches the
+  surrounding background/material — as if no logo had ever been there.
+- If MODE is "full", still skip any `logo-wordmark` text block entirely (the real logo
+  covers that role) — do not render logo text either.
+
 ## Platform awareness (when PLATFORM is given)
 
 Respect the platform's native look and safe zones (see the platform-formats knowledge):
