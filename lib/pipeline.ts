@@ -80,12 +80,21 @@ export async function planChunk(params: {
   renderMode: RenderMode;
   platform?: string;
   hasLogo?: boolean;
+  selectedIdeas?: string[];
+  selectedSellingPoints?: string[];
 }): Promise<PlannedVariation[]> {
-  const { analysis, imageUrl, need, startIndex, usedAngles, renderMode, platform, hasLogo } = params;
+  const { analysis, imageUrl, need, startIndex, usedAngles, renderMode, platform, hasLogo,
+    selectedIdeas, selectedSellingPoints } = params;
   const platformLine =
     platform && platform !== "free" ? `PLATFORM: ${platform} — apply its native look and safe zones.` : "";
   const logoLine = hasLogo
     ? "REPLACEMENT_LOGO: yes — a real logo will be composited afterward; leave that area clean."
+    : "";
+  const ideasLine = selectedIdeas?.length
+    ? `SELECTED_IDEAS (user-chosen — dedicate briefs to these first):\n${selectedIdeas.map((s) => `- ${s}`).join("\n")}`
+    : "";
+  const pointsLine = selectedSellingPoints?.length
+    ? `SELECTED_SELLING_POINTS (user-chosen — express these visually across briefs):\n${selectedSellingPoints.map((s) => `- ${s}`).join("\n")}`
     : "";
 
   // 2a. briefs
@@ -94,6 +103,8 @@ export async function planChunk(params: {
       system: systemPromptFor("02-variation-strategy", "platform-formats"),
       text: [
         platformLine,
+        ideasLine,
+        pointsLine,
         `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
         `Produce exactly ${need} variation briefs, with ids v${startIndex}..v${startIndex + need - 1}.`,
         usedAngles.length

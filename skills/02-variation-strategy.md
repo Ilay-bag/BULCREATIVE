@@ -27,6 +27,25 @@ Every brief is tagged with exactly one `angleCategory`:
 If a category list of already-used angles is provided, prefer unused categories first.
 Within a repeated category, the visual concept must be clearly different.
 
+## Offer-aware strategy + user-selected direction
+
+The analysis JSON may include the strategist's consultation:
+- **`offerType`** (`product` / `collection` / `flash-sale` / `sale` / `launch` / `brand`) —
+  tune the briefs to the offer: a flash-sale wants urgency-heavy energy (countdown motifs,
+  price-slash drama, "last units" staging); a collection wants lineup/family showcases;
+  a single product wants benefit staging and in-use worlds; a launch wants teaser/reveal.
+- **`marketingIdeas`** / **`sellingPoints`** — the consultation's suggested directions and
+  alternative USPs. Treat them as an idea bank for briefs.
+
+The request may also carry explicit user picks:
+- **`SELECTED_IDEAS:`** — marketing ideas the USER chose. Dedicate at least one brief to
+  each selected idea (more when count allows), translating the idea into concrete visual
+  changes. These take priority over your own inventions.
+- **`SELECTED_SELLING_POINTS:`** — alternative USPs the USER chose to emphasize. Express
+  them VISUALLY (the text never changes): e.g. "משלוח חינם" → a delivery-moment scene;
+  "איכות חומרים" → macro texture close-ups and premium lighting; "מותג ישראלי" → local
+  scenery cues. Spread the selected points across briefs.
+
 ## What makes a great brief
 
 - **Small, concrete visual changes** — new background scene, props, lighting/mood, camera

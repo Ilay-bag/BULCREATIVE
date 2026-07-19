@@ -9,10 +9,15 @@ interface TextBlock {
   font: { likelyFamily: string }; color?: string;
   bbox: { x: number; y: number; w: number; h: number };
 }
+interface MarketingIdea { title: string; idea: string }
+interface SellingPoint { point: string; why?: string }
 interface Analysis {
   textBlocks: TextBlock[]; product: string; category: string;
   marketingAngle: string; aspectRatio?: string; colors?: string[];
   toneOfVoice?: string;
+  offerType?: string;
+  marketingIdeas?: MarketingIdea[];
+  sellingPoints?: SellingPoint[];
   brand?: { name?: string | null; logoDescription?: string | null; logoBbox?: { x: number; y: number; w: number; h: number } | null };
   [k: string]: unknown;
 }
@@ -60,6 +65,11 @@ const ANGLE_LABELS: Record<string, string> = {
   comparison: "השוואה", urgency: "דחיפות", identity: "זהות", contrarian: "קונטרריאני",
 };
 
+const OFFER_LABELS: Record<string, string> = {
+  product: "מוצר בודד", collection: "קולקציה", "flash-sale": "פלאש סייל",
+  sale: "מבצע", launch: "השקה", brand: "מותג",
+};
+
 const blobToDataUrl = (blob: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -99,6 +109,9 @@ export default function CreativeMachine() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [fontEdits, setFontEdits] = useState<Record<string, string>>({});
   const [colorEdits, setColorEdits] = useState<Record<string, string>>({});
+  // marketing-consultant picks: which suggested ideas / selling points steer the plan
+  const [pickedIdeas, setPickedIdeas] = useState<Record<string, boolean>>({});
+  const [pickedPoints, setPickedPoints] = useState<Record<string, boolean>>({});
   const [variations, setVariations] = useState<Variation[]>([]);
   const [uiError, setUiError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -174,6 +187,7 @@ export default function CreativeMachine() {
     setRenderMode(data.renderMode);
     setHasHebrew(data.hasHebrew);
     setEdits(Object.fromEntries(data.analysis.textBlocks.map((b: TextBlock) => [b.id, b.text])));
+    setPickedIdeas({}); setPickedPoints({});
     setPhase("review");
   };
   const fail = (e: unknown) => { setUiError(e instanceof Error ? e.message : String(e)); setPhase("failed"); };
@@ -232,7 +246,13 @@ export default function CreativeMachine() {
       const need = Math.min(PLAN_CHUNK, count - all.length);
       const res = await fetch("/api/plan", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need, startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle), platform, hasLogo: !!logoDataUrl }),
+        body: JSON.stringify({
+          analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need,
+          startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle),
+          platform, hasLogo: !!logoDataUrl,
+          selectedIdeas: (a.marketingIdeas ?? []).filter((i) => pickedIdeas[i.title]).map((i) => `${i.title} — ${i.idea}`),
+          selectedSellingPoints: (a.sellingPoints ?? []).filter((s) => pickedPoints[s.point]).map((s) => s.point),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "שגיאה בתכנון");
@@ -440,7 +460,8 @@ export default function CreativeMachine() {
     setBrief(""); setProductFile(null); setProductPreview(null);
     setProductUrl(""); setExtraNotes(""); setLogoDataUrl(null);
     setAnalysis(null); setSourceUrl(undefined); setPlatePrompt(undefined);
-    setEdits({}); setFontEdits({}); setColorEdits({}); syncVars([]); setUiError(null);
+    setEdits({}); setFontEdits({}); setColorEdits({}); setPickedIdeas({}); setPickedPoints({});
+    syncVars([]); setUiError(null);
   };
 
   /* ================== render ================== */
@@ -622,6 +643,7 @@ export default function CreativeMachine() {
             </div>
           </div>
         )}
+        {renderConsultant()}
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-[220px_1fr]">
           {(previewUrl || productPreview) && (
             <div className="sm:sticky sm:top-4 sm:self-start">
@@ -671,6 +693,75 @@ export default function CreativeMachine() {
           </button>
           <button onClick={reset} className="rounded-2xl bg-zinc-800 px-6 py-4 font-black hover:bg-zinc-700">ביטול</button>
         </div>
+      </div>
+    );
+  }
+
+  /* ----- marketing consultant (offer type, ideas, alternative selling points) ----- */
+  function renderConsultant() {
+    const a = analysis!;
+    const ideas = a.marketingIdeas ?? [];
+    const points = a.sellingPoints ?? [];
+    if (ideas.length === 0 && points.length === 0) return null;
+    const pickedCount = ideas.filter((i) => pickedIdeas[i.title]).length
+      + points.filter((s) => pickedPoints[s.point]).length;
+    return (
+      <div className="mb-5 rounded-xl bg-zinc-900/70 p-4 ring-1 ring-zinc-800">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-black text-zinc-300">
+            🧠 היועץ השיווקי
+            {a.offerType && OFFER_LABELS[a.offerType] && (
+              <span className="mr-2 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-bold text-amber-300">
+                זוהה: {OFFER_LABELS[a.offerType]}
+              </span>
+            )}
+          </span>
+          <span className="text-[10px] text-zinc-600">
+            {pickedCount > 0 ? `${pickedCount} הצעות נבחרו — ישולבו בתכנון הווריאציות` : "בחר הצעות כדי לכוון את הווריאציות (אופציונלי)"}
+          </span>
+        </div>
+
+        {ideas.length > 0 && (
+          <div className="mb-3">
+            <p className="mb-2 text-[11px] font-bold text-zinc-500">💡 רעיונות לשיווק ה{OFFER_LABELS[a.offerType ?? ""] ?? "מוצר"}:</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {ideas.map((i) => {
+                const on = !!pickedIdeas[i.title];
+                return (
+                  <button key={i.title} onClick={() => setPickedIdeas((p) => ({ ...p, [i.title]: !on }))}
+                    className={`rounded-lg p-2.5 text-right text-xs ring-1 transition ${on ? "bg-fuchsia-600/20 ring-fuchsia-500 text-zinc-100" : "bg-zinc-950 ring-zinc-800 text-zinc-400 hover:ring-zinc-600"}`}>
+                    <span className="font-bold">{on ? "✓ " : ""}{i.title}</span>
+                    <span className="mt-0.5 block leading-relaxed text-[11px] opacity-80">{i.idea}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {points.length > 0 && (
+          <div>
+            <p className="mb-2 text-[11px] font-bold text-zinc-500">🎯 נקודות מכירה חלופיות (לחיצה = לשלב בווריאציות · ✍️ = לשכתב את הקופי סביבה):</p>
+            <div className="flex flex-wrap gap-2">
+              {points.map((s) => {
+                const on = !!pickedPoints[s.point];
+                return (
+                  <span key={s.point} title={s.why || undefined}
+                    className={`flex items-center gap-1 rounded-full py-1 pl-1.5 pr-3 text-xs ring-1 transition ${on ? "bg-emerald-600/20 ring-emerald-500 text-emerald-200" : "bg-zinc-950 ring-zinc-800 text-zinc-400"}`}>
+                    <button onClick={() => setPickedPoints((p) => ({ ...p, [s.point]: !on }))} className="font-bold hover:opacity-80">
+                      {on ? "✓ " : ""}{s.point}
+                    </button>
+                    <button onClick={() => improveCopy(`שלב את נקודת המכירה "${s.point}" בקופי בצורה טבעית וחדה`)}
+                      disabled={improving} title="שכתב את הקופי סביב נקודת המכירה הזו"
+                      className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-[10px] hover:bg-zinc-700 disabled:opacity-50">
+                      ✍️
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
