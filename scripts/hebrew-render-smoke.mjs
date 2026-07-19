@@ -2,7 +2,7 @@ import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 
-const FONTS = new URL("../assets/fonts", import.meta.url).pathname;
+const FONTS = new URL("../public/fonts", import.meta.url).pathname;
 for (const [file, family] of [
   ["Heebo-900.ttf", "Heebo"],
   ["Heebo-400.ttf", "Heebo"],

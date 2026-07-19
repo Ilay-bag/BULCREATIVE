@@ -78,7 +78,7 @@ skills/         # מסמכי ההנחיה לכל שלב (01-analyze / 02-strateg
 
 1. חבר את הריפו ל-Vercel (Import Project). Framework = Next.js (מזוהה אוטומטית).
 2. הוסף Environment Variables: `OPENROUTER_API_KEY`, `KIE_API_KEY` (ל-Production ו-Preview).
-3. Deploy. הפונטים (`assets/fonts`) וה-skills נכללים אוטומטית ב-functions דרך
+3. Deploy. הפונטים (`public/fonts`) וה-skills נכללים אוטומטית ב-functions דרך
    `outputFileTracingIncludes` ב-`next.config.ts`; ה-binary של `@napi-rs/canvas` נכלל דרך
    `serverExternalPackages`.
 4. **הערת מסלול (plan):** ל-`/api/analyze` ו-`/api/plan` יש `maxDuration = 60`. חשיבת MiniMax

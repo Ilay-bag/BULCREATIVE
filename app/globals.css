@@ -1,31 +1,137 @@
 @import "tailwindcss";
 
+/* ---------- bundled ad fonts, served from /public/fonts ----------
+   The same TTFs power the server-side overlay engine, so what you see
+   in the studio preview and font picker is exactly what ships. */
+@font-face { font-family: "Heebo"; src: url("/fonts/Heebo-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Heebo"; src: url("/fonts/Heebo-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Heebo"; src: url("/fonts/Heebo-900.ttf") format("truetype"); font-weight: 900; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Assistant"; src: url("/fonts/Assistant-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Assistant"; src: url("/fonts/Assistant-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Secular One"; src: url("/fonts/SecularOne-400.ttf") format("truetype"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Frank Ruhl Libre"; src: url("/fonts/FrankRuhlLibre-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Frank Ruhl Libre"; src: url("/fonts/FrankRuhlLibre-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Alef"; src: url("/fonts/Alef-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Alef"; src: url("/fonts/Alef-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Varela Round"; src: url("/fonts/VarelaRound-400.ttf") format("truetype"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Montserrat"; src: url("/fonts/Montserrat-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Montserrat"; src: url("/fonts/Montserrat-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Montserrat"; src: url("/fonts/Montserrat-900.ttf") format("truetype"); font-weight: 900; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/Inter-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/Inter-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Playfair Display"; src: url("/fonts/PlayfairDisplay-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Playfair Display"; src: url("/fonts/PlayfairDisplay-700.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+
 :root {
   color-scheme: dark;
+  --bg: #08080d;
+  --accent: #d946ef;
+  --accent-2: #22d3ee;
 }
 
 body {
-  background: #0a0a0f;
+  min-height: 100vh;
+  background:
+    radial-gradient(1100px 500px at 85% -10%, rgba(217, 70, 239, 0.13), transparent 60%),
+    radial-gradient(900px 450px at 0% 0%, rgba(34, 211, 238, 0.08), transparent 55%),
+    radial-gradient(800px 600px at 50% 110%, rgba(217, 70, 239, 0.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
   color: #ededf2;
-  font-family:
-    "Segoe UI",
-    system-ui,
-    -apple-system,
-    "Helvetica Neue",
-    Arial,
-    sans-serif;
+  font-family: "Heebo", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
 }
 
+/* ---------- glass panels ---------- */
+.glass {
+  background: rgba(24, 24, 32, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.glow-accent {
+  box-shadow: 0 0 0 1px rgba(217, 70, 239, 0.35), 0 8px 40px -12px rgba(217, 70, 239, 0.45);
+}
+
+/* ---------- text gradient ---------- */
+.text-gradient {
+  background: linear-gradient(120deg, #e879f9 0%, #d946ef 45%, #22d3ee 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- scrollbar ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #52525b; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- animations ---------- */
 @keyframes pulse-soft {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.animate-pulse-soft { animation: pulse-soft 1.6s ease-in-out infinite; }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fade-up 0.35s ease-out both; }
+
+@keyframes zoom-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-zoom-in { animation: zoom-in 0.22s ease-out both; }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(105deg, #18181f 40%, #23232e 50%, #18181f 60%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
 }
 
-.animate-pulse-soft {
-  animation: pulse-soft 1.6s ease-in-out infinite;
+/* staggered card entrance for gallery grids */
+.stagger > * { animation: fade-up 0.4s ease-out both; }
+.stagger > *:nth-child(2) { animation-delay: 0.05s; }
+.stagger > *:nth-child(3) { animation-delay: 0.1s; }
+.stagger > *:nth-child(4) { animation-delay: 0.15s; }
+.stagger > *:nth-child(5) { animation-delay: 0.2s; }
+.stagger > *:nth-child(6) { animation-delay: 0.25s; }
+.stagger > *:nth-child(n + 7) { animation-delay: 0.3s; }
+
+/* ---------- WYSIWYG studio preview ---------- */
+.studio-canvas {
+  container-type: size;
+  position: relative;
+  overflow: hidden;
 }
+.studio-block {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+  border-radius: 4px;
+  outline: 1px dashed transparent;
+  outline-offset: 2px;
+  transition: outline-color 0.15s ease;
+  user-select: none;
+  overflow: hidden;
+  line-height: 1.15;
+  white-space: pre-line;
+}
+.studio-canvas:hover .studio-block { outline-color: rgba(255, 255, 255, 0.25); }
+.studio-block.selected { outline: 2px solid var(--accent); outline-offset: 2px; }

@@ -1,11 +1,13 @@
 /**
  * Bundled font registry + trait→font resolver for the text overlay engine.
- * All fonts are OFL-licensed Google Fonts, stored in /assets/fonts.
+ * All fonts are OFL-licensed Google Fonts, stored in /public/fonts so the
+ * same files serve both the server-side overlay engine and the browser UI
+ * (@font-face in globals.css) for WYSIWYG font preview.
  */
 import path from "node:path";
 import { GlobalFonts } from "@napi-rs/canvas";
 
-const FONTS_DIR = path.join(process.cwd(), "assets", "fonts");
+const FONTS_DIR = path.join(process.cwd(), "public", "fonts");
 
 /** family name → list of {weight, file}. Family names are what canvas font strings use. */
 const REGISTRY: Record<string, { weight: number; file: string }[]> = {
