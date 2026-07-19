@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
   const platform = String(form.get("platform") ?? "free");
   const extraNotes = String(form.get("extraNotes") ?? "");
   const productUrlRaw = String(form.get("productUrl") ?? "");
+  const hasLogo = String(form.get("hasLogo") ?? "") === "true";
   const textModeRaw = String(form.get("textMode") ?? "auto");
   const textMode: TextMode = (["auto", "overlay", "gpt"] as const).includes(textModeRaw as never)
     ? (textModeRaw as TextMode)
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
       sourceUrl = url;
     }
 
-    const spec = enforceSansSerif(await designNew({ brief, productImageUrl, aspectRatio, platform, extraNotes }));
+    const spec = enforceSansSerif(await designNew({ brief, productImageUrl, aspectRatio, platform, extraNotes, hasLogo }));
 
     // auto-polish: run the copy through the strong copywriting model before review
     try {

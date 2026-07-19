@@ -38,6 +38,16 @@ oriented advertising creative from nothing: the copy, the layout, and the visual
 Design the scene AROUND the real product: keep the product recognizable, place it as
 the hero, build a complementary environment, lighting and props that sell the benefit.
 
+## Working with a real logo (when REPLACEMENT_LOGO is given)
+
+If the request says `REPLACEMENT_LOGO: yes`, a real brand logo image will be composited
+on top after generation — you never draw a logo yourself. Instead:
+- Set `brand.logoBbox` to a sensible reserved area (typically top-left or top-center,
+  roughly 10–18% of width, short height) that doesn't collide with other text blocks.
+- Do NOT create a `logo-wordmark` text block — the real logo image fills that role.
+- In `platePrompt`, describe that region as clean, empty, unbranded space matching the
+  surrounding scene — never mention or describe a logo there.
+
 ## Layout output — you place every text block (STRICT rules)
 
 Assign each text block a relative bounding box (x, y, w, h as fractions 0..1, top-left

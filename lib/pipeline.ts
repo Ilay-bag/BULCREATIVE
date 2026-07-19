@@ -79,10 +79,14 @@ export async function planChunk(params: {
   usedAngles: string[];
   renderMode: RenderMode;
   platform?: string;
+  hasLogo?: boolean;
 }): Promise<PlannedVariation[]> {
-  const { analysis, imageUrl, need, startIndex, usedAngles, renderMode, platform } = params;
+  const { analysis, imageUrl, need, startIndex, usedAngles, renderMode, platform, hasLogo } = params;
   const platformLine =
     platform && platform !== "free" ? `PLATFORM: ${platform} — apply its native look and safe zones.` : "";
+  const logoLine = hasLogo
+    ? "REPLACEMENT_LOGO: yes — a real logo will be composited afterward; leave that area clean."
+    : "";
 
   // 2a. briefs
   const briefsRes = await callMiniMaxJson(
@@ -115,6 +119,7 @@ export async function planChunk(params: {
       text: [
         `MODE: ${mode}`,
         platformLine,
+        logoLine,
         `Creative analysis JSON:\n${JSON.stringify(analysis)}`,
         `Variation briefs JSON:\n${JSON.stringify({ briefs })}`,
         `Write one generation prompt per brief (${briefs.length} total), following MODE "${mode}". Output only the JSON.`,
@@ -203,6 +208,7 @@ export async function designNew(params: {
   aspectRatio?: string;
   platform?: string;
   extraNotes?: string;
+  hasLogo?: boolean;
 }): Promise<CreativeSpec> {
   const ratioHint = params.aspectRatio ? `Target aspect ratio: ${params.aspectRatio}.` : "";
   const notesHint = params.extraNotes?.trim()
@@ -212,6 +218,9 @@ export async function designNew(params: {
     params.platform && params.platform !== "free"
       ? `PLATFORM: ${params.platform} — apply its native look, text budgets and safe zones.`
       : "";
+  const logoHint = params.hasLogo
+    ? "REPLACEMENT_LOGO: yes — a real logo will be composited afterward; reserve brand.logoBbox and leave that area clean, no invented logo."
+    : "";
   const productHint = params.productImageUrl
     ? "A product photo is attached — design the ad around this exact product as the hero."
     : "No product photo — design the product visual from scratch too.";
@@ -220,6 +229,7 @@ export async function designNew(params: {
       system: systemPromptFor("ad-design", "hebrew-copywriting", "platform-formats"),
       text: [
         platformHint,
+        logoHint,
         `Brief from the user:\n${params.brief}`,
         productHint,
         notesHint,

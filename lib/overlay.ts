@@ -78,7 +78,7 @@ function fitFontSize(
 
 /* ---------- layout sanitation ---------- */
 
-interface RelBox { x: number; y: number; w: number; h: number }
+export interface RelBox { x: number; y: number; w: number; h: number }
 
 const MARGIN = 0.03; // min distance from any edge
 const GAP = 0.015; // min vertical gap between blocks
@@ -155,16 +155,59 @@ function regionLuminance(ctx: SKRSContext2D, x: number, y: number, w: number, h:
 }
 
 /**
- * Composite text blocks (from the creative analysis) onto a background plate.
- * bboxes are relative (0..1) to the ORIGINAL creative; the plate keeps the same
+ * Composite ONLY a logo onto a plate — used in "gpt" render mode (Latin text
+ * already drawn by the image model) where a real logo still needs to replace
+ * whatever the model hallucinated in that area.
+ */
+export async function overlayLogoOnly(
+  plate: Buffer,
+  logoBuffer: Buffer,
+  bbox: RelBox,
+): Promise<Buffer> {
+  const img = await loadImage(sanitizePng(plate));
+  const W = img.width, H = img.height;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, W, H);
+  await drawLogo(ctx, logoBuffer, bbox, W, H);
+  return canvas.encode("png");
+}
+
+/**
+ * Draw a real logo image (contain-fit, centered, aspect preserved) into a
+ * relative bbox on the canvas. Used instead of asking the image model to
+ * draw the logo — models hallucinate/distort logos just like they garble
+ * Hebrew letters, so the real asset is composited pixel-perfect here.
+ */
+async function drawLogo(
+  ctx: SKRSContext2D,
+  logoBuffer: Buffer,
+  bbox: RelBox,
+  W: number,
+  H: number,
+): Promise<void> {
+  const logoImg = await loadImage(sanitizePng(logoBuffer));
+  const boxX = bbox.x * W, boxY = bbox.y * H, boxW = bbox.w * W, boxH = bbox.h * H;
+  const scale = Math.min(boxW / logoImg.width, boxH / logoImg.height);
+  const w = logoImg.width * scale;
+  const h = logoImg.height * scale;
+  const x = boxX + (boxW - w) / 2;
+  const y = boxY + (boxH - h) / 2;
+  ctx.drawImage(logoImg, x, y, w, h);
+}
+
+/**
+ * Composite text blocks and/or a real logo onto a background plate. bboxes
+ * are relative (0..1) to the ORIGINAL creative; the plate keeps the same
  * layout logic, so relative positioning transfers. Layout is sanitized
- * (no overlaps, safe margins) and every block gets a contrast guard: if the
- * chosen color reads poorly against the actual plate pixels behind it, the
- * color flips to white/black and a soft shadow is added for legibility.
+ * (no overlaps, safe margins) and every text block gets a contrast guard: if
+ * the chosen color reads poorly against the actual plate pixels behind it,
+ * the color flips to white/black and a soft shadow is added for legibility.
  */
 export async function overlayTexts(
   plate: Buffer,
   analysis: CreativeAnalysis,
+  opts?: { logo?: { buffer: Buffer; bbox: RelBox } },
 ): Promise<Buffer> {
   ensureFontsRegistered();
   const img = await loadImage(sanitizePng(plate));
@@ -173,6 +216,10 @@ export async function overlayTexts(
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0, W, H);
+
+  if (opts?.logo) {
+    await drawLogo(ctx, opts.logo.buffer, opts.logo.bbox, W, H);
+  }
 
   const rels = sanitizeLayout(analysis.textBlocks.map((t) => t.bbox));
 

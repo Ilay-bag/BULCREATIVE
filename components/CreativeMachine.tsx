@@ -12,7 +12,9 @@ interface TextBlock {
 interface Analysis {
   textBlocks: TextBlock[]; product: string; category: string;
   marketingAngle: string; aspectRatio?: string; colors?: string[];
-  toneOfVoice?: string; [k: string]: unknown;
+  toneOfVoice?: string;
+  brand?: { name?: string | null; logoDescription?: string | null; logoBbox?: { x: number; y: number; w: number; h: number } | null };
+  [k: string]: unknown;
 }
 interface Score {
   hook: number; hierarchy: number; cta: number; legibility: number;
@@ -66,6 +68,9 @@ const blobToDataUrl = (blob: Blob): Promise<string> =>
     r.readAsDataURL(blob);
   });
 
+/** Fallback placement when the design didn't reserve brand.logoBbox: top-left. */
+const DEFAULT_LOGO_BBOX = { x: 0.04, y: 0.04, w: 0.18, h: 0.08 };
+
 export default function CreativeMachine() {
   const [mode, setMode] = useState<Mode>("home");
   const [phase, setPhase] = useState<Phase>("input");
@@ -81,6 +86,8 @@ export default function CreativeMachine() {
   const [extraNotes, setExtraNotes] = useState("");
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [platform, setPlatform] = useState<Platform>("free");
+  // shared: real logo (composited pixel-perfect, never drawn by the model)
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   // shared
   const [count, setCount] = useState(6);
   const [textMode, setTextMode] = useState<"auto" | "overlay" | "gpt">("auto");
@@ -100,6 +107,7 @@ export default function CreativeMachine() {
   const varsRef = useRef<Variation[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const prodRef = useRef<HTMLInputElement>(null);
+  const logoRef = useRef<HTMLInputElement>(null);
 
   // chat
   const [messages, setMessages] = useState<ChatMsg[]>([
@@ -112,14 +120,15 @@ export default function CreativeMachine() {
   const doneCount = variations.filter((v) => v.status === "done").length;
 
   /* ---------- file inputs ---------- */
-  const acceptImage = useCallback((f: File | undefined | null, kind: "creative" | "product") => {
+  const acceptImage = useCallback((f: File | undefined | null, kind: "creative" | "product" | "logo") => {
     if (!f) return;
     if (!["image/png", "image/jpeg", "image/webp"].includes(f.type)) {
       setUiError("פורמט לא נתמך — PNG / JPEG / WebP"); return;
     }
     setUiError(null);
     if (kind === "creative") { setFile(f); setPreviewUrl(URL.createObjectURL(f)); }
-    else { setProductFile(f); setProductPreview(URL.createObjectURL(f)); }
+    else if (kind === "product") { setProductFile(f); setProductPreview(URL.createObjectURL(f)); }
+    else { blobToDataUrl(f).then(setLogoDataUrl); }
   }, []);
 
   /* ---------- start: variations (analyze) ---------- */
@@ -147,6 +156,7 @@ export default function CreativeMachine() {
       form.append("aspectRatio", ratio ?? aspectRatio);
       form.append("platform", platform);
       form.append("textMode", textMode);
+      form.append("hasLogo", String(!!logoDataUrl));
       if (extraNotes.trim()) form.append("extraNotes", extraNotes.trim());
       if (productFile) form.append("productImage", productFile);
       else if (productUrl.trim()) form.append("productUrl", productUrl.trim());
@@ -222,7 +232,7 @@ export default function CreativeMachine() {
       const need = Math.min(PLAN_CHUNK, count - all.length);
       const res = await fetch("/api/plan", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need, startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle), platform }),
+        body: JSON.stringify({ analysis: a, imageUrl: sourceUrl ?? "scratch", renderMode: m, need, startIndex: all.length + 1, usedAngles: all.map((v) => v.marketingAngle), platform, hasLogo: !!logoDataUrl }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "שגיאה בתכנון");
@@ -263,7 +273,11 @@ export default function CreativeMachine() {
           if (info.state === "success" && info.resultUrl) {
             const imgRes = await fetch("/api/image", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ resultUrl: info.resultUrl, mode: m, analysis: m === "overlay" ? a : undefined }),
+              body: JSON.stringify({
+                resultUrl: info.resultUrl, mode: m, analysis: m === "overlay" ? a : undefined,
+                logoDataUrl: logoDataUrl ?? undefined,
+                logoBbox: logoDataUrl ? (a.brand?.logoBbox ?? DEFAULT_LOGO_BBOX) : undefined,
+              }),
             });
             if (imgRes.ok) {
               const blob = await imgRes.blob();
@@ -323,7 +337,11 @@ export default function CreativeMachine() {
         if (info.state === "success" && info.resultUrl) {
           const imgRes = await fetch("/api/image", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ resultUrl: info.resultUrl, mode: m, analysis: m === "overlay" ? a : undefined }),
+            body: JSON.stringify({
+              resultUrl: info.resultUrl, mode: m, analysis: m === "overlay" ? a : undefined,
+              logoDataUrl: logoDataUrl ?? undefined,
+              logoBbox: logoDataUrl ? (a.brand?.logoBbox ?? DEFAULT_LOGO_BBOX) : undefined,
+            }),
           });
           if (imgRes.ok) {
             const blob = await imgRes.blob();
@@ -420,7 +438,7 @@ export default function CreativeMachine() {
     variations.forEach((v) => v.blobUrl && URL.revokeObjectURL(v.blobUrl));
     setMode("home"); setPhase("input"); setFile(null); setPreviewUrl(null);
     setBrief(""); setProductFile(null); setProductPreview(null);
-    setProductUrl(""); setExtraNotes("");
+    setProductUrl(""); setExtraNotes(""); setLogoDataUrl(null);
     setAnalysis(null); setSourceUrl(undefined); setPlatePrompt(undefined);
     setEdits({}); setFontEdits({}); setColorEdits({}); syncVars([]); setUiError(null);
   };
@@ -540,6 +558,22 @@ export default function CreativeMachine() {
             <button key={v} onClick={() => setTextMode(v)} className={`flex-1 rounded-xl px-3 py-2 text-xs font-bold ${textMode === v ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>{l}</button>
           ))}
         </div>
+        <div className="mt-4 border-t border-zinc-800 pt-4">
+          <div className="flex items-center gap-3">
+            <button onClick={() => logoRef.current?.click()} className="rounded-xl bg-zinc-800 px-4 py-2 text-sm font-bold hover:bg-zinc-700">
+              {logoDataUrl ? "החלף לוגו" : "🏷️ העלה לוגו (אופציונלי)"}
+            </button>
+            <input ref={logoRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "logo")} />
+            {logoDataUrl && (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={logoDataUrl} alt="לוגו" className="h-10 w-10 rounded-lg bg-white object-contain p-1 ring-1 ring-zinc-700" />
+                <button onClick={() => setLogoDataUrl(null)} className="text-xs text-zinc-500 hover:text-red-400">הסר</button>
+              </>
+            )}
+          </div>
+          {logoDataUrl && <p className="mt-2 text-xs text-zinc-500">הלוגו יוטבע פיקסל-פרפקט על כל וריאציה — לא מצויר ע"י ה-AI.</p>}
+        </div>
       </div>
     );
   }
@@ -552,6 +586,13 @@ export default function CreativeMachine() {
           <span className="rounded-full bg-fuchsia-500/20 px-4 py-1.5 text-sm font-bold text-fuchsia-300">אישור טקסט</span>
           <h2 className="mt-3 text-2xl font-black text-zinc-100">בדוק ושכלל את הטקסט</h2>
           <p className="mt-1 text-sm text-zinc-400">הטקסט הזה יוטבע מדויק בכל {count} הווריאציות.{hasHebrew && " שים לב לאותיות דומות (ר/ד, ך/ן)."}</p>
+          {logoDataUrl && (
+            <p className="mt-2 inline-flex items-center gap-2 rounded-full bg-zinc-800 px-3 py-1 text-xs font-bold text-zinc-300">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={logoDataUrl} alt="" className="h-4 w-4 rounded bg-white object-contain" />
+              🏷️ הלוגו יוטבע במדויק על כל וריאציה
+            </p>
+          )}
         </div>
         <div className="mb-4 flex justify-center">
           <button onClick={() => improveCopy()} disabled={improving} className="rounded-xl bg-emerald-600/90 px-5 py-2 text-sm font-black hover:bg-emerald-500 disabled:opacity-60">
