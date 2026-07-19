@@ -135,3 +135,37 @@ body {
 }
 .studio-canvas:hover .studio-block { outline-color: rgba(255, 255, 255, 0.25); }
 .studio-block.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* inline editing surface inside a block */
+.studio-editable {
+  width: 100%;
+  max-height: 100%;
+  outline: none;
+  cursor: text;
+  user-select: text;
+  white-space: pre-line;
+}
+
+/* move / resize handles — visible on hover or when the block is selected */
+.studio-handle {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  touch-action: none;
+  text-shadow: none;
+}
+.studio-block:hover .studio-handle,
+.studio-block.selected .studio-handle { opacity: 1; }
+.studio-handle-move { top: -9px; left: -9px; cursor: move; }
+.studio-handle-resize { bottom: -9px; right: -9px; cursor: nwse-resize; }

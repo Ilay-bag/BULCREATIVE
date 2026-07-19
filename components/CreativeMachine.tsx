@@ -10,6 +10,7 @@ interface TextBlock {
   color?: string;
   bbox: { x: number; y: number; w: number; h: number };
 }
+interface BBox { x: number; y: number; w: number; h: number }
 interface MarketingIdea { title: string; idea: string }
 interface SellingPoint { point: string; why?: string }
 interface Analysis {
@@ -128,9 +129,11 @@ export default function CreativeMachine() {
   // studio UX
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
   const [showLivePreview, setShowLivePreview] = useState(true);
+  const [bboxEdits, setBboxEdits] = useState<Record<string, BBox>>({});
   // gallery UX
   const [lightboxId, setLightboxId] = useState<string | null>(null);
   const [galleryFilter, setGalleryFilter] = useState<"all" | "done" | "weak" | "failed">("all");
+  const [compareOn, setCompareOn] = useState(false);
   const [variations, setVariations] = useState<Variation[]>([]);
   const [uiError, setUiError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -138,6 +141,8 @@ export default function CreativeMachine() {
   const [improving, setImproving] = useState(false);
   const varsRef = useRef<Variation[]>([]);
   const blockCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ id: string; mode: "move" | "resize"; sx: number; sy: number; start: BBox } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const prodRef = useRef<HTMLInputElement>(null);
   const logoRef = useRef<HTMLInputElement>(null);
@@ -224,7 +229,7 @@ export default function CreativeMachine() {
     setHasHebrew(data.hasHebrew);
     setEdits(Object.fromEntries(data.analysis.textBlocks.map((b: TextBlock) => [b.id, b.text])));
     setPickedIdeas({}); setPickedPoints({});
-    setSelectedBlock(null); setShowLivePreview(true);
+    setSelectedBlock(null); setShowLivePreview(true); setBboxEdits({});
     setPhase("review");
   };
   const fail = (e: unknown) => { setUiError(e instanceof Error ? e.message : String(e)); setPhase("failed"); };
@@ -255,6 +260,7 @@ export default function CreativeMachine() {
       ...b,
       text: edits[b.id] ?? b.text,
       color: colorEdits[b.id] ?? b.color,
+      bbox: bboxEdits[b.id] ?? b.bbox,
       font: {
         ...b.font,
         ...(fontEdits[b.id] ? { likelyFamily: fontEdits[b.id] } : {}),
@@ -501,9 +507,9 @@ export default function CreativeMachine() {
     setBrief(""); setProductFile(null); setProductPreview(null);
     setProductUrl(""); setExtraNotes(""); setLogoDataUrl(null);
     setAnalysis(null); setSourceUrl(undefined); setPlatePrompt(undefined);
-    setEdits({}); setFontEdits({}); setColorEdits({}); setWeightEdits({});
+    setEdits({}); setFontEdits({}); setColorEdits({}); setWeightEdits({}); setBboxEdits({});
     setPickedIdeas({}); setPickedPoints({});
-    setSelectedBlock(null); setLightboxId(null); setGalleryFilter("all");
+    setSelectedBlock(null); setLightboxId(null); setGalleryFilter("all"); setCompareOn(false);
     syncVars([]); setUiError(null);
   };
 
@@ -671,23 +677,66 @@ export default function CreativeMachine() {
     return colorEdits[b.id] ?? (/^#[0-9a-fA-F]{6}$/.test(b.color ?? "") ? b.color! : "#111111");
   }
 
+  /** The bbox a block currently renders at (drag/resize override → analysis). */
+  function blockBbox(b: TextBlock): BBox {
+    return bboxEdits[b.id] ?? b.bbox;
+  }
+
+  const startBlockDrag = (e: React.PointerEvent, b: TextBlock, dragMode: "move" | "resize") => {
+    e.preventDefault(); e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { id: b.id, mode: dragMode, sx: e.clientX, sy: e.clientY, start: blockBbox(b) };
+    setSelectedBlock(b.id);
+  };
+  const moveBlockDrag = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!d || !rect) return;
+    const dx = (e.clientX - d.sx) / rect.width;
+    const dy = (e.clientY - d.sy) / rect.height;
+    const s = d.start;
+    const next: BBox = d.mode === "move"
+      ? {
+          w: s.w, h: s.h,
+          x: Math.min(Math.max(s.x + dx, 0.02), 0.98 - s.w),
+          y: Math.min(Math.max(s.y + dy, 0.02), 0.98 - s.h),
+        }
+      : {
+          x: s.x, y: s.y,
+          w: Math.min(Math.max(s.w + dx, 0.06), 0.98 - s.x),
+          h: Math.min(Math.max(s.h + dy, 0.025), 0.98 - s.y),
+        };
+    setBboxEdits((p) => ({ ...p, [d.id]: next }));
+  };
+  const endBlockDrag = () => { dragRef.current = null; };
+
   function renderStudioCanvas() {
     const a = analysis!;
     const bgImage = mode === "new" ? productPreview : previewUrl;
     const palette = a.colors ?? [];
     const gradient = `linear-gradient(135deg, ${palette[0] ?? "#27272a"} 0%, ${palette[1] ?? palette[0] ?? "#18181b"} 100%)`;
+    const layoutDirty = Object.keys(bboxEdits).length > 0;
     return (
       <div className="lg:sticky lg:top-4 lg:self-start">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-xs font-black text-zinc-300">🖥️ תצוגה חיה</span>
-          {previewUrl && (
-            <button onClick={() => setShowLivePreview(!showLivePreview)}
-              className="rounded-full bg-zinc-800 px-3 py-1 text-[11px] font-bold text-zinc-300 hover:bg-zinc-700">
-              {showLivePreview ? "👁 הצג מקור" : "✏️ הצג עריכה חיה"}
-            </button>
-          )}
+          <span className="flex items-center gap-2">
+            {layoutDirty && (
+              <button onClick={() => setBboxEdits({})}
+                className="rounded-full bg-zinc-800 px-3 py-1 text-[11px] font-bold text-amber-300 hover:bg-zinc-700">
+                ↺ אפס פריסה
+              </button>
+            )}
+            {previewUrl && (
+              <button onClick={() => setShowLivePreview(!showLivePreview)}
+                className="rounded-full bg-zinc-800 px-3 py-1 text-[11px] font-bold text-zinc-300 hover:bg-zinc-700">
+                {showLivePreview ? "👁 הצג מקור" : "✏️ הצג עריכה חיה"}
+              </button>
+            )}
+          </span>
         </div>
         <div
+          ref={canvasRef}
           className="studio-canvas w-full rounded-2xl ring-1 ring-zinc-800"
           style={{
             aspectRatio: ratioToCss(a.aspectRatio),
@@ -701,18 +750,19 @@ export default function CreativeMachine() {
             const val = edits[b.id] ?? b.text;
             const lines = Math.max(val.split("\n").filter(Boolean).length, 1);
             const isHe = HEBREW_RE.test(val);
-            const sizeCqh = Math.max((b.bbox.h * 100 / lines) * 0.72, 1.6);
+            const box = blockBbox(b);
+            const sizeCqh = Math.max((box.h * 100 / lines) * 0.72, 1.6);
+            const active = selectedBlock === b.id;
             return (
               <div key={b.id}
                 onClick={() => selectBlock(b.id)}
-                className={`studio-block ${selectedBlock === b.id ? "selected" : ""}`}
-                dir={isHe ? "rtl" : "ltr"}
+                className={`studio-block ${active ? "selected" : ""}`}
                 title={ROLE_LABELS[b.role] ?? b.role}
                 style={{
-                  left: `${b.bbox.x * 100}%`,
-                  top: `${b.bbox.y * 100}%`,
-                  width: `${b.bbox.w * 100}%`,
-                  height: `${b.bbox.h * 100}%`,
+                  left: `${box.x * 100}%`,
+                  top: `${box.y * 100}%`,
+                  width: `${box.w * 100}%`,
+                  height: `${box.h * 100}%`,
                   fontFamily: `"${blockFamily(b)}", sans-serif`,
                   fontWeight: blockWeight(b),
                   color: blockColor(b),
@@ -720,7 +770,26 @@ export default function CreativeMachine() {
                   textShadow: "0 1px 8px rgba(0,0,0,0.25)",
                 }}
               >
-                {val}
+                <Editable
+                  value={val}
+                  dir={isHe ? "rtl" : "ltr"}
+                  onChange={(t) => setEdits((p) => ({ ...p, [b.id]: t }))}
+                  onFocus={() => setSelectedBlock(b.id)}
+                />
+                <span
+                  className="studio-handle studio-handle-move"
+                  title="גרור להזזה"
+                  onPointerDown={(e) => startBlockDrag(e, b, "move")}
+                  onPointerMove={moveBlockDrag}
+                  onPointerUp={endBlockDrag}
+                >✥</span>
+                <span
+                  className="studio-handle studio-handle-resize"
+                  title="גרור לשינוי גודל"
+                  onPointerDown={(e) => startBlockDrag(e, b, "resize")}
+                  onPointerMove={moveBlockDrag}
+                  onPointerUp={endBlockDrag}
+                >◢</span>
               </div>
             );
           })}
@@ -738,7 +807,7 @@ export default function CreativeMachine() {
         </div>
         <p className="mt-2 text-center text-[11px] text-zinc-600">
           {mode === "new" && !bgImage ? "הרקע ייווצר בייצור — זו פלטת המותג · " : ""}
-          תצוגה משוערת — בייצור הטקסט מוטבע פיקסל-פרפקט · לחיצה על טקסט בוחרת אותו לעריכה
+          הקלד ישירות על הטקסט · ✥ מזיז · ◢ משנה גודל · בייצור הטקסט מוטבע פיקסל-פרפקט
         </p>
       </div>
     );
@@ -1024,14 +1093,30 @@ export default function CreativeMachine() {
     const v = idx >= 0 ? openable[idx] : null;
     if (!v) return null;
     const go = (d: number) => setLightboxId(openable[(idx + d + openable.length) % openable.length].id);
+    const canCompare = mode === "variations" && !!previewUrl;
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm animate-zoom-in"
         onClick={() => setLightboxId(null)}>
         <div className="flex max-h-full w-full max-w-5xl flex-col gap-4 lg:flex-row" onClick={(e) => e.stopPropagation()}>
           <div className="relative flex min-h-0 flex-1 items-center justify-center">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={v.blobUrl!} alt={v.marketingAngle} className="max-h-[80vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl" />
-            {openable.length > 1 && (
+            {compareOn && canCompare ? (
+              <div className="grid w-full grid-cols-2 gap-3">
+                <figure className="min-w-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={previewUrl!} alt="המקור" className="max-h-[74vh] w-full rounded-2xl object-contain shadow-2xl" />
+                  <figcaption className="mt-2 text-center text-xs font-bold text-zinc-400">המקור</figcaption>
+                </figure>
+                <figure className="min-w-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={v.blobUrl!} alt={v.marketingAngle} className="max-h-[74vh] w-full rounded-2xl object-contain shadow-2xl" />
+                  <figcaption className="mt-2 text-center text-xs font-bold text-fuchsia-300">{v.id} · הווריאציה</figcaption>
+                </figure>
+              </div>
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img src={v.blobUrl!} alt={v.marketingAngle} className="max-h-[80vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl" />
+            )}
+            {openable.length > 1 && !compareOn && (
               <>
                 <button onClick={() => go(1)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 px-3 py-2 text-xl hover:bg-black/80">‹</button>
                 <button onClick={() => go(-1)} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 px-3 py-2 text-xl hover:bg-black/80">›</button>
@@ -1043,6 +1128,12 @@ export default function CreativeMachine() {
               <h3 className="font-black text-fuchsia-300">{v.id} · {v.marketingAngle}</h3>
               <button onClick={() => setLightboxId(null)} className="rounded-lg bg-zinc-800 px-2 py-0.5 text-sm hover:bg-zinc-700">✕</button>
             </div>
+            {canCompare && (
+              <button onClick={() => setCompareOn(!compareOn)}
+                className={`mt-2 w-full rounded-lg px-3 py-1.5 text-xs font-black transition ${compareOn ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
+                {compareOn ? "✕ סגור השוואה" : "⇄ השווה למקור"}
+              </button>
+            )}
             {v.angleCategory && ANGLE_LABELS[v.angleCategory] && (
               <span className="mt-1 inline-block rounded-md bg-zinc-800 px-2 py-0.5 text-[11px] font-bold text-zinc-400">{ANGLE_LABELS[v.angleCategory]}</span>
             )}
@@ -1124,6 +1215,33 @@ function Home({ onVariations, onNew }: { onVariations: () => void; onNew: () => 
       </div>
       <p className="mt-6 text-center text-xs text-zinc-600">אפשר גם פשוט לומר לצ'אט מה לעשות ←</p>
     </div>
+  );
+}
+
+/**
+ * Uncontrolled contentEditable text that stays in sync with external state
+ * without caret jumps: DOM text is only written when it differs from the
+ * prop (i.e. the change came from the side editor, not from typing here).
+ */
+function Editable({ value, dir, onChange, onFocus }: {
+  value: string; dir: "rtl" | "ltr"; onChange: (t: string) => void; onFocus?: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && el.innerText.replace(/\n$/, "") !== value) el.innerText = value;
+  }, [value]);
+  return (
+    <div
+      ref={ref}
+      contentEditable
+      suppressContentEditableWarning
+      dir={dir}
+      spellCheck={false}
+      onInput={() => onChange((ref.current?.innerText ?? "").replace(/\n$/, ""))}
+      onFocus={onFocus}
+      className="studio-editable"
+    />
   );
 }
 
