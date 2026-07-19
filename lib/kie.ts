@@ -48,16 +48,28 @@ export async function uploadImageBase64(
  * or building a scene around a product photo). Without → text-to-image (a
  * creative from scratch). Returns the KIE taskId.
  */
+/**
+ * Aspect ratios KIE has temporarily disabled → remap to the nearest available
+ * one so a user's/model's choice of 4:5 or 5:4 doesn't hard-fail generation.
+ */
+const REMAP_ASPECT: Record<string, string> = {
+  "4:5": "3:4", // portrait 0.80 → 0.75 (closest available)
+  "5:4": "4:3", // landscape 1.25 → 1.33 (closest available)
+};
+
 export async function createImageTask(params: {
   prompt: string;
   sourceUrl?: string;
   aspectRatio?: string;
+  /** internal: set on the 1:1 fallback retry so it can't loop */
+  __retriedSquare?: boolean;
 }): Promise<string> {
   const t2i = !params.sourceUrl;
+  const requested = params.aspectRatio && params.aspectRatio !== "auto"
+    ? (REMAP_ASPECT[params.aspectRatio] ?? params.aspectRatio)
+    : undefined;
   // t2i "auto" only supports 1K; use an explicit ratio so we still get 2K
-  const aspect = params.aspectRatio && params.aspectRatio !== "auto"
-    ? params.aspectRatio
-    : t2i ? "1:1" : "auto";
+  const aspect = requested ?? (t2i ? "1:1" : "auto");
   const input: Record<string, unknown> = {
     prompt: params.prompt,
     aspect_ratio: aspect,
@@ -74,6 +86,10 @@ export async function createImageTask(params: {
   const body: any = await res.json().catch(() => ({}));
   if (body?.code === 402) {
     throw new KieCreditsError("אין מספיק קרדיטים בחשבון KIE — יש להטעין יתרה ב-kie.ai");
+  }
+  // 422 for an unsupported/temporarily-disabled aspect ratio → retry once at 1:1
+  if (body?.code === 422 && /aspect ratio/i.test(body?.msg ?? "") && aspect !== "1:1" && !params.__retriedSquare) {
+    return createImageTask({ ...params, aspectRatio: "1:1", __retriedSquare: true } as any);
   }
   const taskId: string | undefined = body?.data?.taskId;
   if (!res.ok || body?.code !== 200 || !taskId) {
