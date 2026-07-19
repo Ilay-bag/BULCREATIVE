@@ -25,8 +25,12 @@ export interface MiniMaxCallOptions {
 }
 
 class MiniMaxError extends Error {}
+/** A transient upstream/provider failure worth retrying (re-routes the request). */
+class TransientProviderError extends MiniMaxError {}
 
-async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean): Promise<string> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function singleCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new MiniMaxError("OPENROUTER_API_KEY is not set");
 
@@ -42,8 +46,8 @@ async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean)
     ],
     max_tokens: opts.maxTokens ?? 16000,
     temperature: opts.thinking ? 0.7 : 0.3,
-    // prefer the fastest available provider for this model (mitigates slow-provider periods)
-    provider: { sort: "throughput" },
+    // prefer the fastest available provider, but allow fallbacks when it fails
+    provider: { sort: "throughput", allow_fallbacks: true },
   };
   if (includeReasoningParam) {
     // OpenRouter unified reasoning control; MiniMax M3 supports toggleable thinking.
@@ -65,7 +69,11 @@ async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean)
   if (!res.ok) {
     // Some providers reject the reasoning param — retry once without it.
     if (includeReasoningParam && res.status === 400 && /reason/i.test(textBody)) {
-      return rawCall(opts, false);
+      return singleCall(opts, false);
+    }
+    // rate limits and 5xx are transient → let the retry wrapper re-route
+    if (res.status === 429 || res.status >= 500) {
+      throw new TransientProviderError(`OpenRouter ${res.status}: ${textBody.slice(0, 300)}`);
     }
     throw new MiniMaxError(`OpenRouter ${res.status}: ${textBody.slice(0, 500)}`);
   }
@@ -76,11 +84,38 @@ async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean)
   } catch {
     throw new MiniMaxError(`OpenRouter returned non-JSON body: ${textBody.slice(0, 300)}`);
   }
-  const content: string | undefined = json?.choices?.[0]?.message?.content;
+
+  // A provider can fail *inside* a 200 response: choices[0].finish_reason === "error",
+  // a per-choice error object, or a top-level error — all with content: null.
+  const choice: any = json?.choices?.[0];
+  const providerErr = choice?.error ?? json?.error;
+  if (providerErr || choice?.finish_reason === "error") {
+    const msg = providerErr?.message ?? "upstream provider error";
+    throw new TransientProviderError(`OpenRouter provider error: ${String(msg).slice(0, 300)}`);
+  }
+
+  const content: string | undefined = choice?.message?.content;
   if (!content) {
-    throw new MiniMaxError(`OpenRouter response missing content: ${textBody.slice(0, 500)}`);
+    // empty content from a provider hiccup — retry rather than fail the whole pipeline
+    throw new TransientProviderError(`OpenRouter response missing content: ${textBody.slice(0, 300)}`);
   }
   return content;
+}
+
+/** Call with automatic retry+re-route on transient provider failures. */
+async function rawCall(opts: MiniMaxCallOptions, includeReasoningParam: boolean): Promise<string> {
+  const delays = [800, 2000, 4500, 9000];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await singleCall(opts, includeReasoningParam);
+    } catch (err) {
+      lastErr = err;
+      if (!(err instanceof TransientProviderError) || attempt === delays.length) throw err;
+      await sleep(delays[attempt]);
+    }
+  }
+  throw lastErr;
 }
 
 /** Strip inline <think> blocks and markdown fences, then extract the first JSON object/array. */
