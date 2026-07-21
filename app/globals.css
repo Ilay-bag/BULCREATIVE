@@ -257,5 +257,7 @@ input[type="range"].slider::-moz-range-thumb {
 }
 .studio-block:hover .studio-handle,
 .studio-block.selected .studio-handle { opacity: 1; }
-.studio-handle-move { top: -9px; left: -9px; cursor: move; }
-.studio-handle-resize { bottom: -9px; right: -9px; cursor: nwse-resize; }
+/* inset inside the corners — the block (and canvas) clip overflow, so handles
+   placed outside the bounds would be cut off and ungrabbable. */
+.studio-handle-move { top: 3px; left: 3px; cursor: move; }
+.studio-handle-resize { bottom: 3px; right: 3px; cursor: nwse-resize; }
