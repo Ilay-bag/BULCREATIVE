@@ -894,13 +894,17 @@ export default function CreativeMachine() {
     return bboxEdits[b.id] ?? b.bbox;
   }
 
-  const startBlockDrag = (e: React.PointerEvent, b: TextBlock, dragMode: "move" | "resize") => {
+  // NOTE: these are function declarations (not const arrows) on purpose — the
+  // component's `return` sits above them in source, so only hoisted functions
+  // are initialized by the time render calls renderStudioCanvas. A const arrow
+  // here stays in the temporal dead zone → "moveBlockDrag is not defined".
+  function startBlockDrag(e: React.PointerEvent, b: TextBlock, dragMode: "move" | "resize") {
     e.preventDefault(); e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = { id: b.id, mode: dragMode, sx: e.clientX, sy: e.clientY, start: blockBbox(b) };
     setSelectedBlock(b.id);
-  };
-  const moveBlockDrag = (e: React.PointerEvent) => {
+  }
+  function moveBlockDrag(e: React.PointerEvent) {
     const d = dragRef.current;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!d || !rect) return;
@@ -919,8 +923,8 @@ export default function CreativeMachine() {
           h: Math.min(Math.max(s.h + dy, 0.025), 0.98 - s.y),
         };
     setBboxEdits((p) => ({ ...p, [d.id]: next }));
-  };
-  const endBlockDrag = () => { dragRef.current = null; };
+  }
+  function endBlockDrag() { dragRef.current = null; }
 
   function renderStudioCanvas() {
     const a = analysis!;
