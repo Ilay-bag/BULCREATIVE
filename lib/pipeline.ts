@@ -288,9 +288,9 @@ export async function designNew(params: {
 }
 
 /**
- * The copywriting model: a stronger writer than the pipeline's default brain.
- * Configurable via OPENROUTER_COPY_MODEL; falls back to MiniMax when the
- * requested model errors (wrong slug / unavailable on this key).
+ * The copywriting model. Defaults to the same Gemini 3 Flash brain but can be
+ * pointed at a dedicated writer via OPENROUTER_COPY_MODEL; falls back to the
+ * pipeline default when the requested model errors (wrong slug / unavailable).
  */
 const COPY_MODEL = process.env.OPENROUTER_COPY_MODEL || "google/gemini-3-flash-preview";
 

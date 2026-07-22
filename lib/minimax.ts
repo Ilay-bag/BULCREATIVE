@@ -1,12 +1,13 @@
 /**
- * MiniMax M3 via OpenRouter — the "thinking brain" of the pipeline.
- * Supports native vision (image input) and toggleable thinking mode.
+ * The pipeline's "thinking brain" via OpenRouter — Google Gemini 3 Flash by
+ * default (native vision, 1M context, toggleable reasoning). Override with the
+ * OPENROUTER_MODEL env var (any vision-capable OpenRouter slug).
  */
 import { z } from "zod";
 import { outboundFetch } from "./fetch";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "minimax/minimax-m3";
+const MODEL = process.env.OPENROUTER_MODEL || "google/gemini-3-flash-preview";
 
 type ContentPart =
   | { type: "text"; text: string }
@@ -20,7 +21,7 @@ export interface MiniMaxCallOptions {
   /** thinking mode: on for analysis/strategy, off for formatting steps */
   thinking: boolean;
   maxTokens?: number;
-  /** override the model for this call (OpenRouter slug); defaults to MiniMax M3 */
+  /** override the model for this call (OpenRouter slug); defaults to Gemini 3 Flash */
   model?: string;
 }
 
@@ -50,7 +51,7 @@ async function singleCall(opts: MiniMaxCallOptions, includeReasoningParam: boole
     provider: { sort: "throughput", allow_fallbacks: true },
   };
   if (includeReasoningParam) {
-    // OpenRouter unified reasoning control; MiniMax M3 supports toggleable thinking.
+    // OpenRouter unified reasoning control; Gemini 3 Flash supports toggleable thinking.
     body.reasoning = opts.thinking ? { enabled: true } : { enabled: false, exclude: true };
   }
 
