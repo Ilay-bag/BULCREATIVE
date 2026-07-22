@@ -7,7 +7,7 @@
 
 ```
 קריאייטיב אחד
-   → (1) ANALYZE   — MiniMax M3 (ראייה + חשיבה) סורק: טקסטים מדויקים, פונטים, מוצר, זווית
+   → (1) ANALYZE   — Gemini 3 Flash (ראייה + חשיבה) סורק: טקסטים מדויקים, פונטים, מוצר, זווית
    → (2) REVIEW    — עוצר להצגת הטקסט שזוהה; המשתמש מאשר/מתקן (מבטיח עברית מושלמת)
    → (3) STRATEGY  — מתכנן N בריפים: זווית שיווקית שונה + שינויים ויזואליים קטנים לכל וריאציה
    → (4) PROMPT    — כותב הנחיית ייצור מדויקת לכל וריאציה
@@ -16,8 +16,8 @@
    → גלריה חיה + הורדה בודדת + ZIP של הכל
 ```
 
-- **מוח:** [MiniMax M3](https://openrouter.ai/minimax/minimax-m3) דרך OpenRouter — מולטימודלי נייטיב,
-  1M קונטקסט, מצב חשיבה מופעל בשלבי הניתוח והאסטרטגיה.
+- **מוח:** [Gemini 3 Flash](https://openrouter.ai/google/gemini-3-flash-preview) דרך OpenRouter — מולטימודלי נייטיב,
+  1M קונטקסט, מצב חשיבה מופעל בשלבי הניתוח והאסטרטגיה. ניתן להחלפה דרך `OPENROUTER_MODEL`.
 - **ייצור תמונות:** [KIE.AI](https://docs.kie.ai) — מודל `gpt-image-2-image-to-image` ברזולוציית 2K.
 - **מערכת Skills:** כל שלב בצינור מקבל מסמך הנחיות ב-`/skills` שמוזרק ל-system prompt —
   משפרים איכות ועקביות ע"י עריכת Markdown בלבד, בלי לגעת בקוד.
@@ -34,7 +34,7 @@ npm run dev
 
 | משתנה | מה זה |
 |---|---|
-| `OPENROUTER_API_KEY` | מפתח OpenRouter (מוח החשיבה — MiniMax M3) |
+| `OPENROUTER_API_KEY` | מפתח OpenRouter (מוח החשיבה — Gemini 3 Flash) |
 | `KIE_API_KEY` | מפתח KIE.AI (ייצור תמונות + אחסון זמני של המקור) |
 
 פתח `http://localhost:3000`, גרור קריאייטיב (PNG/JPEG/WebP עד 9MB), בחר כמות וריאציות (1–40) ולחץ צור.
@@ -48,7 +48,7 @@ npm run dev
 ```
 app/
   page.tsx                # מסך יחיד (עברית, RTL)
-  api/analyze/route.ts    # POST file → העלאה ל-KIE (sourceUrl) + ניתוח MiniMax → {analysis, sourceUrl, renderMode}
+  api/analyze/route.ts    # POST file → העלאה ל-KIE (sourceUrl) + ניתוח Gemini → {analysis, sourceUrl, renderMode}
   api/plan/route.ts       # POST → מנת בריפים+פרומפטים (עד 10); הלקוח קורא שוב עד שמגיע ל-count
   api/generate/route.ts   # POST {prompt, sourceUrl} → {taskId} (יצירת משימת KIE)
   api/kie-status/route.ts # GET ?taskId → {state, resultUrl}
@@ -81,7 +81,7 @@ skills/         # מסמכי ההנחיה לכל שלב (01-analyze / 02-strateg
 3. Deploy. הפונטים (`public/fonts`) וה-skills נכללים אוטומטית ב-functions דרך
    `outputFileTracingIncludes` ב-`next.config.ts`; ה-binary של `@napi-rs/canvas` נכלל דרך
    `serverExternalPackages`.
-4. **הערת מסלול (plan):** ל-`/api/analyze` ו-`/api/plan` יש `maxDuration = 60`. חשיבת MiniMax
+4. **הערת מסלול (plan):** ל-`/api/analyze` ו-`/api/plan` יש `maxDuration = 60`. חשיבת Gemini
    על תמונה עשויה להתקרב ל-60ש — אם תראה timeouts, פרוס ב-Vercel **Pro** (עד 300ש) או הקטן
    כמות במנה. שאר ה-routes קצרים.
 5. אין צורך ב-DB/Blob — המצב והתמונות בדפדפן.
