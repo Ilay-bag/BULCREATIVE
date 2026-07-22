@@ -108,6 +108,35 @@ export const PromptsResponseSchema = z.object({
 
 export type ImagePrompt = z.infer<typeof ImagePromptSchema>;
 
+/* ---------- angle-explorer skill output: 3 fresh angles ---------- */
+
+/** "new" = a genuinely different hook; "reworded" = same angle, sharper copy. */
+export const ANGLE_TYPES = ["new", "reworded"] as const;
+export type AngleType = (typeof ANGLE_TYPES)[number];
+
+/** New copy for one existing text block, matched to the analysis by id. */
+export const AngleCopyBlockSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+});
+
+export const AngleProposalSchema = z.object({
+  title: z.string(),
+  angleCategory: z.enum(ANGLE_CATEGORIES).catch("outcome"),
+  type: z.enum(ANGLE_TYPES).catch("new"),
+  rationale: z.string().optional().default(""),
+  /** rewritten copy for the creative's text blocks, keyed by the analysis ids */
+  copy: z.array(AngleCopyBlockSchema).min(1),
+  visualDirection: z.string(),
+  /** a text-free background-plate prompt realizing this angle's visual */
+  platePrompt: z.string().min(20),
+});
+export type AngleProposal = z.infer<typeof AngleProposalSchema>;
+
+export const AnglesResponseSchema = z.object({
+  angles: z.array(AngleProposalSchema).min(1),
+});
+
 /* ---------- ad-design skill output: a creative built from scratch ---------- */
 
 export const CreativeSpecSchema = CreativeAnalysisSchema.extend({

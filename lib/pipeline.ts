@@ -5,6 +5,7 @@
  * on Vercel serverless functions.
  */
 import {
+  AnglesResponseSchema,
   BriefsResponseSchema,
   ChatActionSchema,
   CreativeAnalysisSchema,
@@ -12,6 +13,7 @@ import {
   PromptsResponseSchema,
   RewriteResponseSchema,
   ScoreSchema,
+  type AngleProposal,
   type ChatAction,
   type CreativeAnalysis,
   type CreativeScore,
@@ -179,6 +181,37 @@ export function enforceSansSerif(spec: CreativeSpec): CreativeSpec {
     }
   }
   return spec;
+}
+
+/**
+ * Explore 3 fresh directions for an analyzed creative: 2 genuinely new angles
+ * plus 1 reworded version of the current one. Each carries new copy (keyed to
+ * the analysis' block ids), a visual direction and a text-free plate prompt, so
+ * a chosen angle plugs straight into the studio → generation flow.
+ */
+export async function proposeAngles(params: {
+  analysis: CreativeAnalysis;
+  imageUrl?: string;
+  platform?: string;
+}): Promise<AngleProposal[]> {
+  const platformLine =
+    params.platform && params.platform !== "free"
+      ? `PLATFORM: ${params.platform} — apply its native look, text budgets and safe zones.`
+      : "";
+  const res = await callMiniMaxJson(
+    {
+      system: systemPromptFor("angle-explorer", "hebrew-copywriting", "platform-formats"),
+      text: [
+        platformLine,
+        `Creative analysis JSON:\n${JSON.stringify(params.analysis)}`,
+        "Propose exactly 3 directions (2 new + 1 reworded). Output only the JSON.",
+      ].filter(Boolean).join("\n\n"),
+      imageUrl: params.imageUrl,
+      thinking: true,
+    },
+    AnglesResponseSchema,
+  );
+  return res.angles;
 }
 
 /** Score a finished creative (image data URL) against the pre-spend scorecard. */
