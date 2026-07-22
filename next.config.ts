@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
     "/api/image": ["./public/fonts/**"],
     // every model-driven route reads skill prompts from disk
     "/api/analyze": ["./skills/**"],
+    "/api/angles": ["./skills/**"],
     "/api/plan": ["./skills/**"],
     "/api/design-new": ["./skills/**"],
     "/api/chat": ["./skills/**"],

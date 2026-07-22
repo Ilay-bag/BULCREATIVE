@@ -42,8 +42,14 @@ interface Variation {
   blob?: Blob; blobUrl?: string; retries: number; imgFails: number;
   score?: Score; scoring?: boolean;
 }
-type Mode = "home" | "variations" | "new";
-type Phase = "input" | "busy" | "review" | "generating" | "done" | "failed";
+type Mode = "home" | "variations" | "new" | "angles";
+type Phase = "input" | "busy" | "angles" | "review" | "generating" | "done" | "failed";
+
+interface AngleCopyBlock { id: string; text: string }
+interface AngleProposal {
+  title: string; angleCategory: string; type: "new" | "reworded";
+  rationale: string; copy: AngleCopyBlock[]; visualDirection: string; platePrompt: string;
+}
 type Platform = "meta-feed" | "story" | "tiktok" | "linkedin" | "free";
 interface ChatMsg { role: "user" | "assistant"; content: string }
 
@@ -133,6 +139,9 @@ export default function CreativeMachine() {
   // marketing-consultant picks: which suggested ideas / selling points steer the plan
   const [pickedIdeas, setPickedIdeas] = useState<Record<string, boolean>>({});
   const [pickedPoints, setPickedPoints] = useState<Record<string, boolean>>({});
+  // angle exploration (analyze → 3 fresh angles → pick → studio)
+  const [angles, setAngles] = useState<AngleProposal[]>([]);
+  const [anglesBusy, setAnglesBusy] = useState(false);
   // studio UX
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
   const [showLivePreview, setShowLivePreview] = useState(true);
@@ -206,6 +215,53 @@ export default function CreativeMachine() {
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
+  /* ---------- start: analyze & explore 3 angles ---------- */
+  const startAngles = async () => {
+    if (!file) return;
+    setMode("angles"); setBusy(true); setUiError(null); setPhase("busy"); setAngles([]);
+    try {
+      const form = new FormData();
+      form.append("file", file); form.append("textMode", textMode);
+      const res = await fetch("/api/analyze", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "שגיאה בסריקה");
+      applySpec(data, "angles");
+      // fetch the 3 angles after showing the analysis
+      setAnglesBusy(true);
+      try {
+        const ar = await fetch("/api/angles", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ analysis: data.analysis, imageUrl: data.sourceUrl ?? "scratch", platform }),
+        });
+        const ad = await ar.json();
+        if (!ar.ok) throw new Error(ad.error ?? "שגיאה בהצעת הזוויות");
+        setAngles(ad.angles ?? []);
+      } catch (e) { setUiError(e instanceof Error ? e.message : String(e)); }
+      finally { setAnglesBusy(false); }
+    } catch (e) { fail(e); } finally { setBusy(false); }
+  };
+
+  /**
+   * Turn a chosen angle into a creative: apply its new copy onto the analyzed
+   * blocks (keeping fonts/colors/layout/brand), use its plate prompt, and route
+   * into the studio in "new" mode so the existing design→generate flow runs.
+   */
+  const pickAngle = (angle: AngleProposal) => {
+    if (!analysis) return;
+    const copyById = new Map(angle.copy.map((c) => [c.id, c.text]));
+    const nextBlocks = analysis.textBlocks.map((b) => ({ ...b, text: copyById.get(b.id) ?? b.text }));
+    const nextAnalysis: Analysis = { ...analysis, textBlocks: nextBlocks, marketingAngle: angle.title };
+    setAnalysis(nextAnalysis);
+    setEdits(Object.fromEntries(nextBlocks.map((b) => [b.id, b.text])));
+    setPlatePrompt(angle.platePrompt);
+    setMode("new");            // reuse the from-scratch generation path (plate → creative)
+    setCount(1);               // one creative for the chosen angle (the slider can raise it)
+    setSelectedBlock(null); setShowLivePreview(true); setBboxEdits({});
+    setFontEdits({}); setColorEdits({}); setWeightEdits({});
+    setUiError(null);
+    setPhase("review");
+  };
+
   /* ---------- start: new creative (design) ---------- */
   const startNew = async (briefText?: string, ratio?: string) => {
     const b = (briefText ?? brief).trim();
@@ -228,7 +284,7 @@ export default function CreativeMachine() {
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
-  const applySpec = (data: any) => {
+  const applySpec = (data: any, targetPhase: Phase = "review") => {
     setAnalysis(data.analysis);
     setSourceUrl(data.sourceUrl);
     setPlatePrompt(data.platePrompt);
@@ -237,7 +293,7 @@ export default function CreativeMachine() {
     setEdits(Object.fromEntries(data.analysis.textBlocks.map((b: TextBlock) => [b.id, b.text])));
     setPickedIdeas({}); setPickedPoints({});
     setSelectedBlock(null); setShowLivePreview(true); setBboxEdits({});
-    setPhase("review");
+    setPhase(targetPhase);
   };
   const fail = (e: unknown) => { setUiError(e instanceof Error ? e.message : String(e)); setPhase("failed"); };
 
@@ -515,7 +571,7 @@ export default function CreativeMachine() {
     setProductUrl(""); setExtraNotes(""); setLogoDataUrl(null);
     setAnalysis(null); setSourceUrl(undefined); setPlatePrompt(undefined);
     setEdits({}); setFontEdits({}); setColorEdits({}); setWeightEdits({}); setBboxEdits({});
-    setPickedIdeas({}); setPickedPoints({});
+    setPickedIdeas({}); setPickedPoints({}); setAngles([]); setCount(6);
     setSelectedBlock(null); setLightboxId(null); setGalleryFilter("all"); setCompareOn(false);
     syncVars([]); setUiError(null);
   };
@@ -531,16 +587,19 @@ export default function CreativeMachine() {
   function currentStep(): number {
     if (mode === "home") return 0;
     if (phase === "input" || phase === "busy") return 1;
+    if (phase === "angles") return 2;
     if (phase === "review") return 2;
     if (phase === "generating") return 3;
     return 4; // done / failed → gallery
   }
 
   function renderWorkspace() {
-    const stepper = mode !== "home" && <Stepper current={currentStep()} />;
-    if (mode === "home") return <Home onVariations={() => setMode("variations")} onNew={() => setMode("new")} />;
+    const stepper = mode !== "home" && <Stepper current={currentStep()} anglesMode={mode === "angles" && phase === "angles"} />;
+    if (mode === "home") return <Home onVariations={() => setMode("variations")} onNew={() => setMode("new")} onAngles={() => setMode("angles")} />;
+    if (phase === "angles" && analysis) return <>{stepper}{renderAngles()}</>;
     if (phase === "review" && analysis) return <>{stepper}{renderReview()}</>;
     if (phase === "generating" || phase === "done" || phase === "failed") return <>{stepper}{renderGallery()}</>;
+    if (mode === "angles") return <>{stepper}{renderAnglesInput()}</>;
     return <>{stepper}{mode === "variations" ? renderVariationsInput() : renderNewInput()}</>;
   }
 
@@ -569,6 +628,142 @@ export default function CreativeMachine() {
         <button onClick={startVariations} disabled={!file || busy} className={btnPrimary}>
           {busy ? "סורק…" : <><IconSparkle size={17} /> סרוק והתחל</>}
         </button>
+      </div>
+    );
+  }
+
+  /* ----- angles input (upload → analyze → explore) ----- */
+  function renderAnglesInput() {
+    return (
+      <div className="mx-auto max-w-2xl">
+        <BackBar onBack={reset} title="ניתוח וזוויות חדשות" />
+        <p className="mb-4 text-sm leading-relaxed text-[color:var(--text-2)]">
+          מעלים קריאייטיב קיים, המערכת מנתחת אותו, ומציעה 3 זוויות שיווקיות — 2 חדשות ואחת באותה זווית בניסוח חד יותר. בוחרים אחת ומייצרים קריאייטיב.
+        </p>
+        <div onClick={() => fileRef.current?.click()}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => { e.preventDefault(); acceptImage(e.dataTransfer.files?.[0], "creative"); }}
+          className="cursor-pointer rounded-2xl border border-dashed border-[color:var(--border-strong)] bg-[color:var(--surface)] p-10 text-center transition hover:border-[color:var(--accent)] hover:bg-[color:var(--surface-2)]">
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => acceptImage(e.target.files?.[0], "creative")} />
+          {previewUrl ? <img src={previewUrl} alt="" className="mx-auto max-h-72 rounded-lg" />
+            : (
+              <>
+                <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]"><IconUpload size={22} /></span>
+                <p className="mt-4 font-semibold text-[color:var(--text)]">גרור קריאייטיב או לחץ לבחירה</p>
+                <p className="mt-1 text-xs text-[color:var(--text-3)]">PNG / JPEG / WebP · עד 9MB</p>
+              </>
+            )}
+        </div>
+        {platformSelector()}
+        {uiError && <ErrBox msg={uiError} />}
+        <button onClick={startAngles} disabled={!file || busy} className={btnPrimary}>
+          {busy ? "מנתח…" : <><IconTarget size={17} /> נתח והצע זוויות</>}
+        </button>
+      </div>
+    );
+  }
+
+  /* ----- angles: analysis summary + 3 proposals ----- */
+  function renderAngles() {
+    const a = analysis!;
+    const palette = (a.colors ?? []).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c));
+    const typeLabel = (t: string) => (t === "reworded" ? "אותה זווית · ניסוח חדש" : "זווית חדשה");
+    return (
+      <div className="mx-auto max-w-5xl animate-fade-up">
+        <div className="mb-6 text-center">
+          <h2 className="text-2xl font-black tracking-tight text-[color:var(--text)]">ניתוח הקריאייטיב</h2>
+          <p className="mt-1.5 text-sm text-[color:var(--text-2)]">מה שזוהה, ו-3 זוויות להמשך. בחר אחת כדי לייצר ממנה קריאייטיב.</p>
+        </div>
+
+        {/* analysis summary */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr]">
+          {previewUrl && (
+            <div className="lg:sticky lg:top-20 lg:self-start">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={previewUrl} alt="" className="w-full rounded-xl border border-[color:var(--border)]" />
+              <p className="mt-2 text-center text-xs text-[color:var(--text-3)]">הקריאייטיב שהועלה</p>
+            </div>
+          )}
+          <div className="surface rounded-xl p-4">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+              <Info label="מוצר" value={a.product} />
+              <Info label="קטגוריה" value={a.category} />
+              <Info label="זווית נוכחית" value={a.marketingAngle} />
+              {a.offerType && OFFER_LABELS[a.offerType] && <Info label="סוג הצעה" value={OFFER_LABELS[a.offerType]} />}
+              {a.toneOfVoice && <Info label="טון" value={a.toneOfVoice} />}
+            </div>
+            {palette.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[color:var(--border)] pt-3">
+                <span className="text-[11px] text-[color:var(--text-3)]">פלטה:</span>
+                {palette.slice(0, 6).map((c, i) => (
+                  <span key={i} className="h-5 w-5 rounded-md border border-[color:var(--border-strong)]" style={{ backgroundColor: c }} title={c} />
+                ))}
+              </div>
+            )}
+            {a.textBlocks.length > 0 && (
+              <div className="mt-3 border-t border-[color:var(--border)] pt-3">
+                <span className="text-[11px] text-[color:var(--text-3)]">טקסטים שזוהו:</span>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {a.textBlocks.map((b) => (
+                    <span key={b.id} className="rounded-md border border-[color:var(--border)] px-2 py-0.5 text-xs text-[color:var(--text-2)]" dir="auto">
+                      {b.text.replace(/\n/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* the 3 angles */}
+        <div className="mt-8">
+          <div className="mb-3 flex items-center gap-2">
+            <IconTarget size={16} className="text-[color:var(--accent)]" />
+            <span className="text-sm font-bold text-[color:var(--text)]">3 זוויות מוצעות</span>
+          </div>
+          {anglesBusy && angles.length === 0 && (
+            <div className="stagger grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {[0, 1, 2].map((i) => <div key={i} className="animate-shimmer h-64 rounded-xl" />)}
+            </div>
+          )}
+          {!anglesBusy && angles.length === 0 && !uiError && (
+            <p className="text-sm text-[color:var(--text-3)]">לא הוחזרו זוויות. נסה שוב.</p>
+          )}
+          {angles.length > 0 && (
+            <div className="stagger grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {angles.map((ang, i) => (
+                <div key={i} className="surface flex flex-col rounded-xl p-4 transition hover:border-[color:var(--border-strong)]">
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${ang.type === "reworded" ? "border border-[color:var(--border)] text-[color:var(--text-2)]" : "bg-[color:var(--accent)] text-[color:var(--accent-ink)]"}`}>
+                      {typeLabel(ang.type)}
+                    </span>
+                    {ANGLE_LABELS[ang.angleCategory] && (
+                      <span className="rounded-md border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--text-3)]">
+                        {ANGLE_LABELS[ang.angleCategory]}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="mt-2.5 text-base font-bold text-[color:var(--text)]">{ang.title}</h3>
+                  {ang.rationale && <p className="mt-1 text-xs leading-relaxed text-[color:var(--text-2)]">{ang.rationale}</p>}
+                  <div className="mt-3 space-y-1 rounded-lg bg-black/25 p-2.5">
+                    {ang.copy.slice(0, 4).map((c) => (
+                      <p key={c.id} className="truncate text-sm text-[color:var(--text)]" dir="auto" title={c.text}>{c.text.replace(/\n/g, " ")}</p>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--text-3)]">🎬 {ang.visualDirection}</p>
+                  <button onClick={() => pickAngle(ang)} className="btn btn-primary mt-3 w-full py-2 text-sm">
+                    <IconWand size={14} /> צור קריאייטיב מזווית זו
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {uiError && angles.length === 0 && <ErrBox msg={uiError} />}
+        </div>
+
+        <div className="mt-6 flex justify-center">
+          <button onClick={reset} className="btn btn-secondary px-6 py-2.5 text-sm">התחל מחדש</button>
+        </div>
       </div>
     );
   }
@@ -947,7 +1142,7 @@ export default function CreativeMachine() {
         {uiError && <ErrBox msg={uiError} />}
         <div className="mt-6 flex flex-wrap gap-3">
           <button onClick={confirmAndGenerate} disabled={busy} className="btn btn-primary flex-1 py-3.5 text-base">
-            {busy ? "מתחיל…" : <><IconCheck size={17} /> אשר וצור {count} וריאציות</>}
+            {busy ? "מתחיל…" : <><IconCheck size={17} /> {count === 1 ? "אשר וצור קריאייטיב" : `אשר וצור ${count} וריאציות`}</>}
           </button>
           <button onClick={reset} className="btn btn-secondary px-6 py-3.5">ביטול</button>
         </div>
@@ -1209,10 +1404,11 @@ const btnPrimary = "btn btn-primary mt-6 w-full py-3.5 text-base";
 
 const STEP_NAMES = ["התחלה", "הגדרות", "סטודיו", "ייצור", "גלריה"];
 
-function Stepper({ current }: { current: number }) {
+function Stepper({ current, anglesMode }: { current: number; anglesMode?: boolean }) {
+  const names = anglesMode ? ["התחלה", "הגדרות", "זוויות", "ייצור", "גלריה"] : STEP_NAMES;
   return (
     <div className="mb-8 flex items-center justify-center" dir="rtl">
-      {STEP_NAMES.map((name, i) => {
+      {names.map((name, i) => {
         const state = i < current ? "done" : i === current ? "active" : "todo";
         return (
           <div key={name} className="flex items-center">
@@ -1236,36 +1432,36 @@ function Stepper({ current }: { current: number }) {
   );
 }
 
-function Home({ onVariations, onNew }: { onVariations: () => void; onNew: () => void }) {
+function Home({ onVariations, onNew, onAngles }: { onVariations: () => void; onNew: () => void; onAngles: () => void }) {
+  const cards = [
+    { on: onVariations, icon: <IconLayers size={20} />, title: "וריאציות מקריאייטיב קיים",
+      desc: "מעלים מודעה — מקבלים עשרות וריאציות עם אותו טקסט ופונט." },
+    { on: onAngles, icon: <IconTarget size={20} />, title: "ניתוח וזוויות חדשות",
+      desc: "מעלים מודעה — מקבלים ניתוח ו-3 זוויות שיווקיות חדשות לבחירה." },
+    { on: onNew, icon: <IconWand size={20} />, title: "יצירת קריאייטיב חדש",
+      desc: "מתארים מוצר או מבצע — המערכת מעצבת מודעה מאפס, כולל קופי." },
+  ];
   return (
-    <div className="mx-auto max-w-3xl animate-fade-up pt-6">
+    <div className="mx-auto max-w-4xl animate-fade-up pt-6">
       <h2 className="text-center text-3xl font-black tracking-tight text-[color:var(--text)]">
         קריאייטיב אחד. <span className="text-[color:var(--accent)]">ארבעים</span> וריאציות.
       </h2>
       <p className="mx-auto mt-3 max-w-md text-center text-sm leading-relaxed text-[color:var(--text-2)]">
         אותו טקסט, אותו פונט, זווית שיווקית חדשה בכל וריאציה — עם יועץ שיווקי מובנה וסטודיו עריכה חי.
       </p>
-      <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <button onClick={onVariations} className="surface group rounded-2xl p-7 text-right transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)]">
-          <span className="grid h-10 w-10 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]">
-            <IconLayers size={20} />
-          </span>
-          <h3 className="mt-4 text-base font-bold text-[color:var(--text)]">וריאציות מקריאייטיב קיים</h3>
-          <p className="mt-1.5 text-sm leading-relaxed text-[color:var(--text-2)]">מעלים מודעה — מקבלים עשרות וריאציות עם אותו טקסט ופונט.</p>
-          <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[color:var(--accent)] opacity-0 transition group-hover:opacity-100">
-            התחל <IconArrowRight size={13} className="rotate-180" />
-          </span>
-        </button>
-        <button onClick={onNew} className="surface group rounded-2xl p-7 text-right transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)]">
-          <span className="grid h-10 w-10 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]">
-            <IconWand size={20} />
-          </span>
-          <h3 className="mt-4 text-base font-bold text-[color:var(--text)]">יצירת קריאייטיב חדש</h3>
-          <p className="mt-1.5 text-sm leading-relaxed text-[color:var(--text-2)]">מתארים מוצר או מבצע — המערכת מעצבת מודעה מאפס, כולל קופי.</p>
-          <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[color:var(--accent)] opacity-0 transition group-hover:opacity-100">
-            התחל <IconArrowRight size={13} className="rotate-180" />
-          </span>
-        </button>
+      <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {cards.map((c) => (
+          <button key={c.title} onClick={c.on} className="surface group rounded-2xl p-7 text-right transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)]">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[color:var(--surface-3)] text-[color:var(--accent)]">
+              {c.icon}
+            </span>
+            <h3 className="mt-4 text-base font-bold text-[color:var(--text)]">{c.title}</h3>
+            <p className="mt-1.5 text-sm leading-relaxed text-[color:var(--text-2)]">{c.desc}</p>
+            <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[color:var(--accent)] opacity-0 transition group-hover:opacity-100">
+              התחל <IconArrowRight size={13} className="rotate-180" />
+            </span>
+          </button>
+        ))}
       </div>
       <p className="mt-8 text-center text-xs text-[color:var(--text-3)]">אפשר גם פשוט לכתוב לעוזר בצד מה לעשות</p>
     </div>
@@ -1345,6 +1541,16 @@ function BackBar({ onBack, title }: { onBack: () => void; title: string }) {
         <IconArrowRight size={15} /> חזרה
       </button>
       <h2 className="text-lg font-bold tracking-tight text-[color:var(--text)]">{title}</h2>
+    </div>
+  );
+}
+
+function Info({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <div>
+      <div className="text-[11px] text-[color:var(--text-3)]">{label}</div>
+      <div className="mt-0.5 font-semibold text-[color:var(--text)]" dir="auto">{value}</div>
     </div>
   );
 }
